@@ -1,0 +1,62 @@
+{
+  "name": "@p0qp0q/babylon-thin-instance-outline",
+  "version": "0.0.1",
+  "description": "Per-instance outline rendering for Babylon.js thin-instances using the inverted-hull technique.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "demo": "vite serve demo",
+    "lint": "eslint src tests",
+    "format": "prettier --write src tests",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "keywords": [
+    "babylon",
+    "babylonjs",
+    "thin-instance",
+    "thin-instances",
+    "outline",
+    "highlight",
+    "selection",
+    "inverted-hull",
+    "toon-shader",
+    "rendering"
+  ],
+  "author": "Allen Partridge <increasinglyHuman@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/increasinglyHuman/babylon-thin-instance-outline.git"
+  },
+  "homepage": "https://github.com/increasinglyHuman/babylon-thin-instance-outline#readme",
+  "bugs": {
+    "url": "https://github.com/increasinglyHuman/babylon-thin-instance-outline/issues"
+  },
+  "peerDependencies": {
+    "@babylonjs/core": ">=8.0.0 <9.0.0"
+  },
+  "devDependencies": {
+    "@babylonjs/core": "^8.24.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0",
+    "vite": "^5.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0"
+  }
+}
