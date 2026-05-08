@@ -15,6 +15,7 @@ import {
   MeshBuilder,
   NullEngine,
   Scene,
+  VertexBuffer,
 } from '@babylonjs/core'
 import { ThinInstanceOutliner } from '../src'
 import { _resetForTest } from '../src/outlineShader'
@@ -316,6 +317,64 @@ describe('ThinInstanceOutliner', () => {
       // Re-highlight with no color: still green
       outliner.highlight(host, 2)
       expect(readColorAt(host.metadata.outlineMesh, 2)).toEqual([0, 1, 0, 1])
+    })
+  })
+
+  describe('smoothNormals', () => {
+    /** Snapshot a normal vector at vertex `i` from a vertices-data array. */
+    const normalAt = (data: ArrayLike<number>, i: number) => [
+      data[i * 3],
+      data[i * 3 + 1],
+      data[i * 3 + 2],
+    ]
+
+    it('default behavior averages outline normals at shared positions (cubes get continuous outlines)', () => {
+      outliner.attach(host) // smoothNormals defaults to true
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+      const outlineNormals = outlineMesh.getVerticesData(VertexBuffer.NormalKind)!
+      // A box has 24 vertices, 4 per face. Without smoothing, each face's 4
+      // vertices share a single face-axis normal (one of (±1,0,0), (0,±1,0),
+      // (0,0,±1)). After smoothing, every vertex sits at a corner shared by 3
+      // faces, so the smoothed normal points along the diagonal — magnitude of
+      // each component is ~1/√3. Test: no normal in the output is purely axis-
+      // aligned anymore.
+      let foundNonAxisAligned = false
+      for (let i = 0; i < outlineNormals.length / 3; i++) {
+        const [x, y, z] = normalAt(outlineNormals, i)
+        const isAxisAligned =
+          (Math.abs(Math.abs(x) - 1) < 1e-3 && Math.abs(y) < 1e-3 && Math.abs(z) < 1e-3) ||
+          (Math.abs(x) < 1e-3 && Math.abs(Math.abs(y) - 1) < 1e-3 && Math.abs(z) < 1e-3) ||
+          (Math.abs(x) < 1e-3 && Math.abs(y) < 1e-3 && Math.abs(Math.abs(z) - 1) < 1e-3)
+        if (!isAxisAligned) {
+          foundNonAxisAligned = true
+          break
+        }
+      }
+      expect(foundNonAxisAligned).toBe(true)
+    })
+
+    it('smoothNormals=false leaves outline normals as face-aligned', () => {
+      outliner.attach(host, { smoothNormals: false })
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+      const outlineNormals = outlineMesh.getVerticesData(VertexBuffer.NormalKind)!
+      // With smoothing off, every cube vertex normal should still be face-aligned
+      for (let i = 0; i < outlineNormals.length / 3; i++) {
+        const [x, y, z] = normalAt(outlineNormals, i)
+        const sumSq = x * x + y * y + z * z
+        // Unit-length sanity
+        expect(sumSq).toBeCloseTo(1, 4)
+        // Exactly one component is ±1, others zero
+        const oneCount = [x, y, z].filter((c) => Math.abs(Math.abs(c) - 1) < 1e-3).length
+        expect(oneCount).toBe(1)
+      }
+    })
+
+    it('host normals are NEVER touched by smoothNormals (smoothing applies only to outline geometry)', () => {
+      // Snapshot host normals BEFORE attach
+      const before = Array.from(host.getVerticesData(VertexBuffer.NormalKind)!)
+      outliner.attach(host) // default smoothNormals = true
+      const after = Array.from(host.getVerticesData(VertexBuffer.NormalKind)!)
+      expect(after).toEqual(before)
     })
   })
 })

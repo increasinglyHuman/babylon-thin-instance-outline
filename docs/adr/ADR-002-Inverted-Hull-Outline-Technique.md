@@ -170,7 +170,7 @@ Implementation lives in `matrixHelpers.ts`.
 ## 4. Limitations & edge cases
 
 - **Concave geometry:** the inverted hull can render bizarre internal faces visible through concavities. Acceptable for v1; document.
-- **Hard-edge meshes:** vertex-normal displacement can split at hard edges, producing a discontinuous outline. v2 may add normal-smoothing as preprocess.
+- **Hard-edge meshes:** vertex-normal displacement splits at hard edges, producing a torn outline at corners (verified visible 2026-05-07 on `MeshBuilder.CreateBox`, where 24 vertices each have face-aligned normals — at corners, three coincident vertices push outward in three different directions). **Mitigated in v1** via `attach({ smoothNormals: true })` (default). The outliner averages normals across coincident vertex positions on the outline mesh's geometry only, so the displacement direction agrees at corners and the silhouette is continuous. Sharp corner GEOMETRY is preserved (90° angles intact); only the displacement direction is smoothed. Host normals are never touched, so host lighting stays crisp. The implementation is O(n²) in vertex count, fine for typical thin-instance hosts (cubes, primitives, asset meshes <10k verts); larger meshes can opt out via `smoothNormals: false`.
 - **Skinned meshes:** the outline mesh's geometry is static; skinned source meshes will have a misaligned outline. v2 explicit feature.
 - **Animated source matrices:** if the host's matrix buffer is dynamic (instances move), the outline lib needs to mirror updates. v1 polls on `attach`-time; future could subscribe to source's buffer change events. Document workaround: call `outliner.refresh(host)` after source matrix updates.
 

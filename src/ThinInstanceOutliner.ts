@@ -12,9 +12,10 @@
  * matrix buffers that we mutate per-instance.
  */
 
-import { Color3, Mesh, Scene, ShaderMaterial } from '@babylonjs/core'
+import { Color3, Mesh, Scene, ShaderMaterial, VertexBuffer } from '@babylonjs/core'
 import { ZERO_SCALE_MATRIX, fillBufferWithZeroScale } from './matrixHelpers'
 import { OUTLINE_COLOR_ATTRIBUTE, OUTLINE_SHADER_PATH, registerOutlineShader } from './outlineShader'
+import { averageNormalsAtSharedPositions } from './smoothNormals'
 
 /** Options for {@link ThinInstanceOutliner.attach}. All fields optional. */
 export interface AttachOptions {
@@ -29,6 +30,16 @@ export interface AttachOptions {
    * group 0 — the technique still works in most cases via depth ordering.
    */
   renderingGroupOffset?: number
+  /**
+   * Average vertex normals across coincident positions on the outline mesh's
+   * geometry, so that hard-edge meshes (e.g. cubes from `MeshBuilder.CreateBox`)
+   * produce continuous outlines at corners instead of tearing apart. Default
+   * true. The HOST mesh is not affected — its lighting stays crisp; only the
+   * outline's displacement direction at corners is smoothed. Disable for
+   * stylized "split outline" looks or to skip the O(n²) preprocess on very
+   * large meshes.
+   */
+  smoothNormals?: boolean
 }
 
 /**
@@ -96,6 +107,7 @@ export class ThinInstanceOutliner {
     const thickness = options.thickness ?? DEFAULT_THICKNESS
     const color = options.color ?? DEFAULT_COLOR
     const groupOffset = options.renderingGroupOffset ?? DEFAULT_RENDERING_GROUP_OFFSET
+    const smoothNormals = options.smoothNormals ?? true
 
     // Clone the host. Babylon's Mesh.clone shares the underlying Geometry, and
     // thin-instance state lives on the geometry — so without makeGeometryUnique()
@@ -109,6 +121,20 @@ export class ThinInstanceOutliner {
     if (!outlineMesh) return
     outlineMesh.makeGeometryUnique()
     outlineMesh.parent = null // sibling, NEVER child — see ADR-001 §3.4
+
+    // Smooth normals at shared positions so hard-edge meshes don't tear at
+    // corners during inverted-hull displacement. Mutates only the outline
+    // mesh's normals — host's normals are untouched (host kept its own
+    // geometry instance via makeGeometryUnique above).
+    if (smoothNormals) {
+      const positions = outlineMesh.getVerticesData(VertexBuffer.PositionKind)
+      const normals = outlineMesh.getVerticesData(VertexBuffer.NormalKind)
+      if (positions && normals) {
+        const normalsArr = normals instanceof Float32Array ? normals : new Float32Array(normals)
+        averageNormalsAtSharedPositions(positions, normalsArr)
+        outlineMesh.updateVerticesData(VertexBuffer.NormalKind, normalsArr)
+      }
+    }
 
     // The outline mesh's bounding info is irrelevant — we don't pick or cull against
     // the outline as a separate object, and many of its instances are degenerate

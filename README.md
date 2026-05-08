@@ -88,15 +88,15 @@ This library renders a per-instance silhouette outline. Mental model:
 
 - **Per-instance, not per-group.** Outlining instances 3, 7, and 12 produces three independent outlines. Even if the instances are touching, each gets its own outline; they don't merge into a single border around the union. For a unified group outline (one continuous border around multiple meshes), use a stencil-based or screen-space approach like Babylon's `SelectionOutlineLayer`.
 - **Surface-following, not edge-detecting.** The outline traces the silhouette of the mesh's surface as seen from the camera. CSG cuts, hollows, and concave geometry are part of the surface — they get outlined too (sometimes in visually surprising ways for concave shapes; ADR-002 §4 covers the edge cases).
-- **Hard-edge meshes split at the seam.** A cube's corners have discontinuous vertex normals by default; the outline visibly splits there. v2 may add a normal-smoothing preprocess. For now, soft-shaded meshes look cleaner than flat-shaded ones.
+- **Hard-edge meshes are handled.** A cube has discontinuous vertex normals at corners by default — without intervention, the outline tears apart there. The outliner averages normals across coincident vertex positions on the *outline* mesh only (host stays crisp), so the silhouette is continuous around sharp 90° corners. Default on; opt out with `attach(host, { smoothNormals: false })` for stylized split-outline looks or to skip the O(n²) preprocess on very large meshes.
 
 ## Status & roadmap
 
 **v0 (current):** scaffold + ADRs + design.
 
-**v1:** core inverted-hull outline for unlit / Standard / PBR materials. Single-mesh-per-host case. Static thin-instances (no mid-edit growth). **Per-instance color** via `highlight(host, idx, { color })`.
+**v1:** core inverted-hull outline. Single-mesh-per-host case. Static thin-instances (no mid-edit growth). **Per-instance color** via `highlight(host, idx, { color })`. **Smooth-normals preprocess** for hard-edge meshes (default on).
 
-**v2:** multi-mesh hosts (skeleton-shared), animated mesh outline (skeleton-clone), per-instance thickness, normal-smoothing preprocess for hard-edge meshes.
+**v2:** multi-mesh hosts (skeleton-shared), animated mesh outline (skeleton-clone), per-instance thickness, animated edge effects (pulse / sweep / rolling glow for magic-weapon-style highlights).
 
 **v3:** publish to npm, mention to Babylon community.
 
