@@ -136,11 +136,19 @@ export class ThinInstanceOutliner {
       }
     }
 
-    // The outline mesh's bounding info is irrelevant — we don't pick or cull against
-    // the outline as a separate object, and many of its instances are degenerate
-    // (zero-scale). Disable the auto-sync so per-frame highlight/clear don't trigger
-    // bounds recomputation across all instances.
+    // The outline mesh's bounding info is irrelevant for our purposes — we don't
+    // pick against the outline, and most of its instances are degenerate (zero-
+    // scale at origin) so any aggregate bounds would be misleading. Two flags work
+    // together here:
+    //   1. doNotSyncBoundingInfo — skip the per-frame refresh on every matrix
+    //      mutation, since highlight()/clear() trigger this constantly.
+    //   2. alwaysSelectAsActiveMesh — opt out of frustum culling for the outline,
+    //      since stale bounds combined with no-refresh would (and DID, pre-fix)
+    //      cause the outline to vanish whenever the camera frustum doesn't happen
+    //      to include world origin. Trivial cost: the outline mesh always enters
+    //      the active list. The actual rendered fragments are still GPU-clipped.
     outlineMesh.doNotSyncBoundingInfo = true
+    outlineMesh.alwaysSelectAsActiveMesh = true
 
     // Material: ShaderMaterial with FRONT-face culling (so only back faces render).
     // See ADR-002 §3.2 for why `cullBackFaces = false` means cull-front-faces.

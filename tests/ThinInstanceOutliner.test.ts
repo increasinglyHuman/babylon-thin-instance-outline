@@ -103,6 +103,17 @@ describe('ThinInstanceOutliner', () => {
       expect(outlineMesh.material!.cullBackFaces).toBe(false)
     })
 
+    it('REGRESSION: outline mesh always enters the active list (no frustum culling)', () => {
+      // Without alwaysSelectAsActiveMesh = true, the outline mesh's stale
+      // bounding info (tied to the local geometry, not the spread-out thin-
+      // instance positions) gets frustum-culled whenever the camera target is
+      // far from world origin — observed by Allen 2026-05-07 on a closeup of
+      // cube 8 at world (5.6, 0, -7.2). Lock it in.
+      outliner.attach(host)
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+      expect(outlineMesh.alwaysSelectAsActiveMesh).toBe(true)
+    })
+
     it('REGRESSION: outline mesh has unique geometry so its matrix buffer cannot clobber host', () => {
       // Without makeGeometryUnique() in attach(), Mesh.clone shares the geometry,
       // and thin-instance state lives on the geometry — so outlineMesh.thinInstanceSetBuffer
