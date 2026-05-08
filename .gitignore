@@ -1,6 +1,10 @@
 node_modules/
 dist/
 demo-dist/
+
+# Playwright / debug screenshots
+.playwright-mcp/
+demo-*.png
 *.log
 .DS_Store
 .vscode/

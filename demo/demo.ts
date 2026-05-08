@@ -54,36 +54,77 @@ for (let i = 0; i < COUNT; i++) {
 host.thinInstanceSetBuffer('matrix', matrixBuffer, 16, false)
 host.thinInstanceEnablePicking = true
 
-// --- Outliner: pale blue, 0.045 thickness for chunky readability
+// --- Outliner: pale blue default, 0.045 thickness for chunky readability
 const outliner = new ThinInstanceOutliner(scene)
 outliner.attach(host, {
   color: new Color3(0.55, 0.8, 1.0),
   thickness: 0.045,
 })
 
-// Pre-outline 3 instances per the README quick-start contract
-for (const idx of [8, 42, 73]) outliner.highlight(host, idx)
+// Pre-outline 3 instances with different per-instance colors:
+// red, lime, gold — demonstrates per-call HighlightOptions.color override.
+const PRESET_COLORS: Array<[number, Color3]> = [
+  [8,  new Color3(1.0, 0.25, 0.25)],
+  [42, new Color3(0.4, 1.0, 0.3)],
+  [73, new Color3(1.0, 0.85, 0.2)],
+]
+for (const [idx, color] of PRESET_COLORS) outliner.highlight(host, idx, { color })
 
 // --- Picking: click to toggle outline per-instance
+// Cycles through a small palette so each click can introduce a new color.
+const PALETTE: Color3[] = [
+  new Color3(0.55, 0.8, 1.0),    // pale blue (default)
+  new Color3(1.0, 0.4, 0.6),     // pink
+  new Color3(0.6, 0.4, 1.0),     // violet
+  new Color3(0.3, 1.0, 0.85),    // teal
+  new Color3(1.0, 0.7, 0.2),     // amber
+]
+let paletteCursor = 0
+
 scene.onPointerObservable.add((info) => {
   if (info.type !== PointerEventTypes.POINTERDOWN) return
   const pickInfo = info.pickInfo
   if (!pickInfo?.hit || pickInfo.pickedMesh !== host) return
-  // For thin-instances, Babylon exposes the chosen index via `thinInstanceIndex`
   const idx = pickInfo.thinInstanceIndex
   if (idx === undefined || idx < 0) return
-  if (outliner.isHighlighted(host, idx)) outliner.clear(host, idx)
-  else outliner.highlight(host, idx)
+  if (outliner.isHighlighted(host, idx)) {
+    outliner.clear(host, idx)
+  } else {
+    const color = PALETTE[paletteCursor++ % PALETTE.length]
+    outliner.highlight(host, idx, { color })
+  }
 })
 
 window.addEventListener('keydown', (e) => {
   const key = e.key.toLowerCase()
   if (key === 'r') outliner.clearAll(host)
   else if (key === 'a') {
-    for (let i = 0; i < COUNT; i++) outliner.highlight(host, i)
+    // Random rainbow assignment for the visual flex
+    for (let i = 0; i < COUNT; i++) {
+      const hue = (i * 137.5) % 360 // golden-angle hue spread
+      outliner.highlight(host, i, { color: hslToColor3(hue, 0.7, 0.65) })
+    }
   }
 })
+
+function hslToColor3(h: number, s: number, l: number): Color3 {
+  // Pulled inline to avoid pulling another helper file into the demo.
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
+  const m = l - c / 2
+  const [r, g, b] =
+    h < 60  ? [c, x, 0] :
+    h < 120 ? [x, c, 0] :
+    h < 180 ? [0, c, x] :
+    h < 240 ? [0, x, c] :
+    h < 300 ? [x, 0, c] :
+              [c, 0, x]
+  return new Color3(r + m, g + m, b + m)
+}
 
 // --- Render loop
 engine.runRenderLoop(() => scene.render())
 window.addEventListener('resize', () => engine.resize())
+
+// Debug handle (used by tests/playwright; harmless in shipped lib since this is the demo)
+;(window as unknown as { __demo: unknown }).__demo = { engine, scene, host, outliner }

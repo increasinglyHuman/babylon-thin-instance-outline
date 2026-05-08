@@ -14,7 +14,7 @@
 
 import { Color3, Mesh, Scene, ShaderMaterial } from '@babylonjs/core'
 import { ZERO_SCALE_MATRIX, fillBufferWithZeroScale } from './matrixHelpers'
-import { OUTLINE_SHADER_PATH, registerOutlineShader } from './outlineShader'
+import { OUTLINE_COLOR_ATTRIBUTE, OUTLINE_SHADER_PATH, registerOutlineShader } from './outlineShader'
 
 /** Options for {@link ThinInstanceOutliner.attach}. All fields optional. */
 export interface AttachOptions {
@@ -34,12 +34,15 @@ export interface AttachOptions {
 /**
  * Options for {@link ThinInstanceOutliner.highlight}.
  *
- * v1 limitation: per-instance overrides are reserved but inert. Color and thickness
- * are per-host (set at attach). v2 will add per-instance buffers via
- * `thinInstanceRegisterAttribute` — see ADR-003 §6.
+ * `color` is per-instance: if provided, overrides the per-host attach color
+ * for this slot. Persists across show/hide until explicitly changed again.
+ *
+ * `thickness` is per-host in v1 (one ShaderMaterial uniform); v2 may add
+ * per-instance thickness via a second buffer.
  */
 export interface HighlightOptions {
   color?: Color3
+  /** v1: ignored (thickness is per-host). Reserved for v2. */
   thickness?: number
 }
 
@@ -47,6 +50,15 @@ interface AttachedHost {
   outlineMesh: Mesh
   material: ShaderMaterial
   shownIndices: Set<number>
+}
+
+/** Write a Color3 + alpha=1 to the color buffer at the given instance slot. */
+function writeColorAt(buffer: Float32Array, index: number, color: Color3): void {
+  const base = index * 4
+  buffer[base + 0] = color.r
+  buffer[base + 1] = color.g
+  buffer[base + 2] = color.b
+  buffer[base + 3] = 1
 }
 
 const DEFAULT_THICKNESS = 0.03
@@ -85,11 +97,17 @@ export class ThinInstanceOutliner {
     const color = options.color ?? DEFAULT_COLOR
     const groupOffset = options.renderingGroupOffset ?? DEFAULT_RENDERING_GROUP_OFFSET
 
-    // Clone the host. Babylon's Mesh.clone shares geometry (same vertex buffer)
-    // but the clone gets its own thin-instance state — exactly what we need:
-    // zero geometry duplication, independent matrix buffer for show/hide.
+    // Clone the host. Babylon's Mesh.clone shares the underlying Geometry, and
+    // thin-instance state lives on the geometry — so without makeGeometryUnique()
+    // the outline mesh's thinInstanceSetBuffer would clobber the host's matrix
+    // buffer on the shared geometry, suppressing every host instance whose slot
+    // is zero-scale in the outline buffer (i.e., every un-highlighted instance).
+    // The Babylon thin-instance docs call this out explicitly:
+    //   "If you want to create a thin instance from a cloned mesh, you have to
+    //    first make sure that you call clonedMesh.makeGeometryUnique()."
     const outlineMesh = host.clone(`${host.name}_outline`, null, true)
     if (!outlineMesh) return
+    outlineMesh.makeGeometryUnique()
     outlineMesh.parent = null // sibling, NEVER child — see ADR-001 §3.4
 
     // The outline mesh's bounding info is irrelevant — we don't pick or cull against
@@ -105,14 +123,13 @@ export class ThinInstanceOutliner {
       this.scene,
       OUTLINE_SHADER_PATH,
       {
-        attributes: ['position', 'normal', 'world0', 'world1', 'world2', 'world3'],
-        uniforms: ['viewProjection', 'thickness', 'outlineColor'],
+        attributes: ['position', 'normal', 'world0', 'world1', 'world2', 'world3', OUTLINE_COLOR_ATTRIBUTE],
+        uniforms: ['viewProjection', 'thickness'],
       },
     )
     material.backFaceCulling = true
     material.cullBackFaces = false
     material.setFloat('thickness', thickness)
-    material.setColor3('outlineColor', color)
     outlineMesh.material = material
 
     // Allocate independent matrix buffer, all zero-scale (nothing visible yet).
@@ -120,6 +137,13 @@ export class ThinInstanceOutliner {
     fillBufferWithZeroScale(matrixBuffer, count)
     outlineMesh.thinInstanceSetBuffer('matrix', matrixBuffer, 16, false) // updateable
     outlineMesh.thinInstanceCount = count
+
+    // Per-instance color buffer: every slot starts at the per-attach default.
+    // highlight(idx, { color }) overrides individual slots; clear() doesn't touch
+    // color so a re-highlighted slot keeps its last color until explicitly changed.
+    const colorBuffer = new Float32Array(count * 4)
+    for (let i = 0; i < count; i++) writeColorAt(colorBuffer, i, color)
+    outlineMesh.thinInstanceSetBuffer(OUTLINE_COLOR_ATTRIBUTE, colorBuffer, 4, false)
 
     // Render order: outline before host so host's front faces occlude outline's front.
     const targetGroup = host.renderingGroupId + groupOffset
@@ -137,9 +161,12 @@ export class ThinInstanceOutliner {
   /**
    * Show the outline at `instanceIndex`. Reads the host's current matrix at that
    * index and writes it to the outline mesh's buffer at the same index.
+   * If `options.color` is provided, the per-instance color slot is overwritten;
+   * otherwise the slot keeps whatever color was last set (defaulting to the
+   * per-attach color from the first attach call).
    * No-op if `attach` wasn't called or index is out of range.
    */
-  highlight(host: Mesh, instanceIndex: number, _options?: HighlightOptions): void {
+  highlight(host: Mesh, instanceIndex: number, options?: HighlightOptions): void {
     const state = this.attached.get(host)
     if (!state) return
     if (instanceIndex < 0 || instanceIndex >= host.thinInstanceCount) return
@@ -149,6 +176,15 @@ export class ThinInstanceOutliner {
     if (!sourceMatrix) return
 
     state.outlineMesh.thinInstanceSetMatrixAt(instanceIndex, sourceMatrix, true)
+    if (options?.color) {
+      const c = options.color
+      state.outlineMesh.thinInstanceSetAttributeAt(
+        OUTLINE_COLOR_ATTRIBUTE,
+        instanceIndex,
+        [c.r, c.g, c.b, 1],
+        true,
+      )
+    }
     state.shownIndices.add(instanceIndex)
   }
 

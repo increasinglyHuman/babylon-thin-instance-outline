@@ -19,6 +19,15 @@ import { Effect } from '@babylonjs/core'
 /** Namespaced key for ShadersStore — avoids collision with user shaders. */
 export const OUTLINE_SHADER_PATH = 'p0qp0qThinInstanceOutline'
 
+/**
+ * Custom thin-instance attribute name for per-instance outline color (vec4 RGBA).
+ * NOT named "color" because Babylon silently renames `kind === 'color'` to
+ * `'colorInstance'` inside `thinInstanceRegisterAttribute` (a backward-compat
+ * shim for `VertexBuffer.ColorKind` vs `ColorInstanceKind`). Using our own name
+ * avoids the rename surprise entirely.
+ */
+export const OUTLINE_COLOR_ATTRIBUTE = 'outlineInstanceColor'
+
 const VERTEX_SOURCE = `
 precision highp float;
 
@@ -31,8 +40,13 @@ attribute vec4 world1;
 attribute vec4 world2;
 attribute vec4 world3;
 
+// Per-thin-instance outline color (vec4 RGBA)
+attribute vec4 outlineInstanceColor;
+
 uniform mat4 viewProjection;
 uniform float thickness;
+
+varying vec4 vOutlineColor;
 
 void main() {
     mat4 finalWorld = mat4(world0, world1, world2, world3);
@@ -41,16 +55,17 @@ void main() {
     // scale will produce slightly skewed outlines (acceptable for v1 — see ADR-002 §4).
     vec3 displaced = position + normal * thickness;
     gl_Position = viewProjection * finalWorld * vec4(displaced, 1.0);
+    vOutlineColor = outlineInstanceColor;
 }
 `
 
 const FRAGMENT_SOURCE = `
 precision highp float;
 
-uniform vec3 outlineColor;
+varying vec4 vOutlineColor;
 
 void main() {
-    gl_FragColor = vec4(outlineColor, 1.0);
+    gl_FragColor = vOutlineColor;
 }
 `
 

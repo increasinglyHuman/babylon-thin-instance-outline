@@ -54,14 +54,11 @@ const outliner = new ThinInstanceOutliner(scene)
 // Creates the parallel outline mesh, mirrors matrix buffer.
 outliner.attach(myHostMesh)
 
-// Highlight a specific instance (pale blue, 1.03x scale)
-outliner.highlight(myHostMesh, 7, {
-  color: new Color3(0.5, 0.7, 1.0),
-  thickness: 0.03,  // outline mesh scale offset from source
-})
+// Highlight a specific instance (pale blue per the attach default)
+outliner.highlight(myHostMesh, 7)
 
-// Multiple instances — write each
-outliner.highlight(myHostMesh, 12, { color: new Color3(0.5, 0.7, 1.0) })
+// Highlight with a per-instance color override (red just for slot 12)
+outliner.highlight(myHostMesh, 12, { color: new Color3(1.0, 0.3, 0.3) })
 
 // Clear one
 outliner.clear(myHostMesh, 7)
@@ -85,13 +82,21 @@ outliner.detach(myHostMesh)
 | `detach(hostMesh)` | Dispose outline mesh; remove all state for this host. |
 | `dispose()` | Detach all hosts; clean up. |
 
+## What this does and doesn't do
+
+This library renders a per-instance silhouette outline. Mental model:
+
+- **Per-instance, not per-group.** Outlining instances 3, 7, and 12 produces three independent outlines. Even if the instances are touching, each gets its own outline; they don't merge into a single border around the union. For a unified group outline (one continuous border around multiple meshes), use a stencil-based or screen-space approach like Babylon's `SelectionOutlineLayer`.
+- **Surface-following, not edge-detecting.** The outline traces the silhouette of the mesh's surface as seen from the camera. CSG cuts, hollows, and concave geometry are part of the surface — they get outlined too (sometimes in visually surprising ways for concave shapes; ADR-002 §4 covers the edge cases).
+- **Hard-edge meshes split at the seam.** A cube's corners have discontinuous vertex normals by default; the outline visibly splits there. v2 may add a normal-smoothing preprocess. For now, soft-shaded meshes look cleaner than flat-shaded ones.
+
 ## Status & roadmap
 
 **v0 (current):** scaffold + ADRs + design.
 
-**v1:** core inverted-hull outline for unlit / Standard / PBR materials. Single-mesh-per-host case. Static thin-instances (no mid-edit growth).
+**v1:** core inverted-hull outline for unlit / Standard / PBR materials. Single-mesh-per-host case. Static thin-instances (no mid-edit growth). **Per-instance color** via `highlight(host, idx, { color })`.
 
-**v2:** multi-mesh hosts (skeleton-shared), animated mesh outline (skeleton-clone), dynamic per-instance thickness/color buffers (currently uniform per host).
+**v2:** multi-mesh hosts (skeleton-shared), animated mesh outline (skeleton-clone), per-instance thickness, normal-smoothing preprocess for hard-edge meshes.
 
 **v3:** publish to npm, mention to Babylon community.
 

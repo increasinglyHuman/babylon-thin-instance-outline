@@ -63,10 +63,10 @@ highlight(hostMesh: Mesh, instanceIndex: number, options?: HighlightOptions): vo
 Make instance `instanceIndex` visible in the outline. Writes the source's current matrix (read from host's matrix buffer at the same index) into the outline mesh's matrix buffer at `instanceIndex`.
 
 `HighlightOptions` (all optional):
-- `color?: Color3` — per-call color override; **v1 limitation:** color is per-host (set at attach), not per-instance. v2 may add per-instance color buffer.
-- `thickness?: number` — per-call thickness override; **v1 limitation:** same — per-host.
+- `color?: Color3` — **per-instance** color override. If provided, sets the outline color for this slot. Persists across show/hide cycles until changed again. If omitted, the slot keeps its current color (default = the per-attach color from the first `attach` call).
+- `thickness?: number` — reserved for v2; ignored in v1 (thickness is a single ShaderMaterial uniform set at attach).
 
-In v1, `options` is reserved for future use. Currently no-op except documenting intent.
+**Note (revised 2026-05-07):** Per-instance color was originally deferred to v2 in this ADR's first revision. It's been promoted to v1 because the implementation cost was small (a single custom thin-instance attribute, vec4 RGBA) and Allen's first hands-on use surfaced the need immediately. v2 still owns per-instance thickness (would require a second buffer + shader change).
 
 Pre-condition: `attach` was called for this host.
 Out-of-range index: silent no-op (logs warning in dev mode).

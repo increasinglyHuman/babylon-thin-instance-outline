@@ -101,6 +101,17 @@ describe('ThinInstanceOutliner', () => {
       expect(outlineMesh.material!.backFaceCulling).toBe(true)
       expect(outlineMesh.material!.cullBackFaces).toBe(false)
     })
+
+    it('REGRESSION: outline mesh has unique geometry so its matrix buffer cannot clobber host', () => {
+      // Without makeGeometryUnique() in attach(), Mesh.clone shares the geometry,
+      // and thin-instance state lives on the geometry — so outlineMesh.thinInstanceSetBuffer
+      // would silently overwrite host's matrix buffer, suppressing every un-highlighted
+      // host instance. Verified manually 2026-05-07 via playwright; locking in the
+      // invariant here so we never regress.
+      outliner.attach(host)
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+      expect(outlineMesh.geometry).not.toBe(host.geometry)
+    })
   })
 
   describe('highlight / clear', () => {
@@ -249,6 +260,62 @@ describe('ThinInstanceOutliner', () => {
       // ShaderMaterial uniforms aren't introspectable directly without compiling the
       // effect; the meaningful assertion is that attach completed without error and
       // produced a material. Visual verification lives in the demo HTML page.
+    })
+  })
+
+  describe('per-instance color', () => {
+    /** Read the color buffer slot at `index`. Reaches into Babylon's user-thin-
+     * instance buffer storage; OK in tests because we own the attribute name. */
+    function readColorAt(outlineMesh: Mesh, index: number): [number, number, number, number] {
+      const data = outlineMesh._userThinInstanceBuffersStorage?.data?.outlineInstanceColor
+      if (!data) throw new Error('color buffer not initialized')
+      const base = index * 4
+      return [data[base], data[base + 1], data[base + 2], data[base + 3]]
+    }
+
+    it('initializes every color slot to the per-attach default', () => {
+      outliner.attach(host, { color: new Color3(0.2, 0.5, 0.9) })
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+      for (let i = 0; i < HOST_INSTANCE_COUNT; i++) {
+        const [r, g, b, a] = readColorAt(outlineMesh, i)
+        expect(r).toBeCloseTo(0.2, 6)
+        expect(g).toBeCloseTo(0.5, 6)
+        expect(b).toBeCloseTo(0.9, 6)
+        expect(a).toBeCloseTo(1, 6)
+      }
+    })
+
+    it('highlight with options.color overrides only the targeted slot', () => {
+      outliner.attach(host, { color: new Color3(0.2, 0.5, 0.9) })
+      outliner.highlight(host, 2, { color: new Color3(1, 0, 0) })
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+
+      // Slot 2 → red override
+      expect(readColorAt(outlineMesh, 2)).toEqual([1, 0, 0, 1])
+      // Other slots → still the attach default
+      const [r, g, b] = readColorAt(outlineMesh, 0)
+      expect(r).toBeCloseTo(0.2, 6)
+      expect(g).toBeCloseTo(0.5, 6)
+      expect(b).toBeCloseTo(0.9, 6)
+    })
+
+    it('highlight without color leaves the slot color unchanged', () => {
+      outliner.attach(host, { color: new Color3(0.2, 0.5, 0.9) })
+      outliner.highlight(host, 2, { color: new Color3(1, 0, 0) }) // set red
+      outliner.highlight(host, 2)                                 // no color arg
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+      expect(readColorAt(outlineMesh, 2)).toEqual([1, 0, 0, 1])
+    })
+
+    it('clear does not reset color; a later re-highlight preserves the override', () => {
+      outliner.attach(host, { color: new Color3(0.2, 0.5, 0.9) })
+      outliner.highlight(host, 2, { color: new Color3(0, 1, 0) })
+      outliner.clear(host, 2)
+      // Color preserved
+      expect(readColorAt(host.metadata.outlineMesh, 2)).toEqual([0, 1, 0, 1])
+      // Re-highlight with no color: still green
+      outliner.highlight(host, 2)
+      expect(readColorAt(host.metadata.outlineMesh, 2)).toEqual([0, 1, 0, 1])
     })
   })
 })

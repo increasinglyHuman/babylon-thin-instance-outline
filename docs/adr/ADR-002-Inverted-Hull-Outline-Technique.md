@@ -104,13 +104,15 @@ Per highlight:
 ### 3.1 Outline mesh creation
 
 When `attach(hostMesh)` is called:
-- Clone the host's geometry (Babylon `Mesh.clone(name, parent, doNotCloneChildren)`)
-- Set `outlineMesh.name = ${hostMesh.name}_outline`
+- Clone the host (`hostMesh.clone(name, null, doNotCloneChildren=true)`)
+- **Call `outlineMesh.makeGeometryUnique()` immediately after cloning.** This is non-negotiable. `Mesh.clone` shares the underlying `Geometry`, and Babylon's thin-instance state lives on the geometry — without the unique call, `outlineMesh.thinInstanceSetBuffer('matrix', ...)` would clobber the host's matrix buffer on the shared geometry, suppressing every host instance whose corresponding outline slot is zero-scale. The Babylon thin-instance docs call this out in their Limitations section. Verified live against Babylon 8.56 on 2026-05-07; locked in via a regression test in `tests/ThinInstanceOutliner.test.ts`.
 - Set `outlineMesh.parent = null` (NEVER child — see ADR-001 §3.4 / CLAUDE.md architecture rules)
 - Apply the outline material (see §3.2)
 - Allocate matrix buffer of size `hostMesh.thinInstanceCount * 16`, all entries = `ZERO_SCALE_MATRIX`
 - `outlineMesh.thinInstanceSetBuffer('matrix', buffer, 16, false)` — non-static (we mutate)
 - `outlineMesh.thinInstanceCount = hostMesh.thinInstanceCount`
+- Allocate per-instance color buffer (vec4 RGBA, stride 4), every slot initialized to the per-attach default color
+- `outlineMesh.thinInstanceSetBuffer('outlineInstanceColor', colorBuffer, 4, false)`
 - Tag the outline mesh: `outlineMesh.metadata = { isOutlineFor: hostMesh.uniqueId }`
 
 ### 3.2 Outline material
@@ -145,7 +147,9 @@ void main() {
 }
 ```
 
-`thickness` is per-host (set when `attach` is called or via `setThickness()`); not per-instance in v1. Per-instance thickness would require a second buffer and is deferred to v2.
+`thickness` is per-host (a single ShaderMaterial uniform); not per-instance in v1. Per-instance thickness would require a second thin-instance attribute and shader change — deferred to v2.
+
+**Per-instance color** IS in v1 via a custom thin-instance attribute (`outlineInstanceColor`, vec4 RGBA). The attribute name deliberately avoids `'color'` because Babylon's `thinInstanceRegisterAttribute` silently renames `kind === 'color'` to `'colorInstance'` for backward-compat with `VertexBuffer.ColorKind` — using our own name dodges the rename surprise. The shader reads the attribute as a vec4 varying; the fragment shader emits it directly (the alpha channel is currently always 1, but the slot is reserved for future per-instance opacity).
 
 ### 3.4 Render order + depth
 
