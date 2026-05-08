@@ -20,7 +20,8 @@
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "demo": "vite serve demo",
+    "demo": "vite",
+    "demo:build": "vite build",
     "lint": "eslint src tests",
     "format": "prettier --write src tests",
     "prepublishOnly": "npm run build && npm test"
