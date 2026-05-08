@@ -55,6 +55,17 @@ Write a custom `ShaderMaterial` or `NodeMaterial` that:
 
 Revisit for v2 if community feedback wants higher visual fidelity.
 
+### 2.3b Babylon's `SelectionOutlineLayer` (post-process) — REJECTED for this lib
+
+Babylon 8.x ships `SelectionOutlineLayer` / `ThinSelectionOutlineLayer` (the "Thin" prefix here means *lightweight effect layer*, NOT thin-instance — different word). It's a screen-space outline post-process that draws an outline around enabled meshes in a separate pass.
+
+**Why rejected:**
+- Per-mesh enable, same gap as `EdgesRenderer` — no per-thin-instance API.
+- Requires the consumer to opt into a full-scene effect layer, which is heavier than a single sibling-mesh draw call.
+- Visually different (uniform-thickness screen-space outline regardless of distance), which is a different aesthetic than the silhouette-following inverted hull.
+
+Worth noting so future contributors understand we considered it. Babylon's internal `OutlineRenderer` does have a `#define THIN_INSTANCES` shader path, but again the user-facing enable is per-mesh.
+
 ### 2.4 Inverted hull outline — ACCEPTED
 
 The inverted-hull technique is a well-established outline approach used in toon shaders, stylized rendering, Pixar's RenderMan, every Unity/Unreal toon shader pack, etc.
@@ -104,21 +115,19 @@ When `attach(hostMesh)` is called:
 
 ### 3.2 Outline material
 
-Use a simple `ShaderMaterial` (or `StandardMaterial` configured for unlit flat-color):
+We use a `ShaderMaterial` because the technique requires (a) per-vertex displacement along the normal — only available via custom shader — and (b) per-instance world-matrix decoding from Babylon's thin-instance attribute layout (`world0/world1/world2/world3`). A `StandardMaterial` cannot satisfy (a) without monkey-patching.
+
+The "render only back faces" effect is achieved through Babylon's two-flag culling API (verified against `packages/dev/core/src/Materials/material.ts` `_backFaceCulling` / `_cullBackFaces`):
 
 ```ts
-const mat = new StandardMaterial(`${host.name}_outlineMat`, scene)
-mat.disableLighting = true                    // unlit
-mat.emissiveColor = outlineColor              // flat color via emissive
-mat.backFaceCulling = false                   // we want back faces only — see vertex shader
-mat.sideOrientation = Material.ClockWiseSideOrientation  // or CounterClockWise; flip via cullBackFaces
-
-// The actual "render only back faces" effect:
-mat.cullBackFaces = false
-// Then in custom vertex shader (or via SimpleMaterial subclass): only emit fragments for back-facing tris
+mat.backFaceCulling = true   // default — culling is enabled at all
+mat.cullBackFaces   = false  // when true (default), back faces are culled.
+                             // false → FRONT faces are culled, only back faces render.
 ```
 
-Practical alternative: use a `ShaderMaterial` with explicit `gl_FrontFacing` discard in fragment shader. Cleaner than fighting StandardMaterial culling flags. See `outlineShader.ts` for the shader pair.
+This is the canonical Babylon idiom for the back-face-only half of the inverted-hull pattern. No `gl_FrontFacing` discard, no `sideOrientation` gymnastics, no Babylon-internal patches. Worth calling out because the flag pair reads ambiguously: `cullBackFaces` looks like a culling on/off, but it actually selects *which* face gets culled when culling is enabled. The matching flag in Unity-land is `Cull Front`; same idea.
+
+See `outlineShader.ts` for the vertex/fragment pair (vertex displaces along normal; fragment emits the unlit outline color).
 
 ### 3.3 Vertex displacement (the "scaled outward" part)
 
