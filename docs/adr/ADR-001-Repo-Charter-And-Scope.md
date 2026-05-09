@@ -1,6 +1,6 @@
 # ADR-001 — Repo Charter & Scope
 
-**Status:** 🟢 Accepted (foundational)
+**Status:** 🟢 Accepted (foundational) · §2.1 amended by ADR-004 (per-mesh case promoted to in-scope, v1.1)
 **Date:** 2026-05-07
 **Author:** Allen Partridge + Claude
 
