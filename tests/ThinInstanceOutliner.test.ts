@@ -550,6 +550,42 @@ describe('ThinInstanceOutliner', () => {
       expect(outliner.isHighlighted(host, 2)).toBe(true)
     })
 
+    it('setEffectParams live-tunes uniform-backed params without recompile', () => {
+      outliner.attach(host, {
+        pulse: { speed: 2, amplitude: 0.5 },
+        edgeFlow: { axis: 'y', speed: 1, width: 0.15 },
+      })
+      outliner.setEffectParams(host, {
+        thickness: 0.09,
+        pulse: { speed: 4 }, // partial update: amplitude untouched
+        edgeFlow: { width: 0.3, boost: 2.5 },
+      })
+      const material = (host.metadata.outlineMesh as Mesh).material as unknown as {
+        _floats: Record<string, number>
+      }
+      expect(material._floats.thickness).toBeCloseTo(0.09, 6)
+      expect(material._floats.pulseSpeed).toBeCloseTo(4, 6)
+      expect(material._floats.pulseAmplitude).toBeCloseTo(0.5, 6) // preserved
+      expect(material._floats.flowWidth).toBeCloseTo(0.3, 6)
+      expect(material._floats.flowBoost).toBeCloseTo(2.5, 6)
+    })
+
+    it('setEffectParams ignores effects the host was not attached with', () => {
+      outliner.attach(host, { pulse: { speed: 2, amplitude: 0.5 } })
+      // colorCycle uniforms don't exist in this compiled shader — must not write
+      outliner.setEffectParams(host, { colorCycle: { period: 9 }, thickness: 0.07 })
+      const material = (host.metadata.outlineMesh as Mesh).material as unknown as {
+        _floats: Record<string, number>
+      }
+      expect(material._floats.cyclePeriod).toBeUndefined()
+      expect(material._floats.thickness).toBeCloseTo(0.07, 6) // thickness always works
+    })
+
+    it('setEffectParams on an un-attached host is a silent no-op', () => {
+      const other = buildHostWithThinInstances(scene)
+      expect(() => outliner.setEffectParams(other, { thickness: 0.1 })).not.toThrow()
+    })
+
     it('edgeFlow measures the geometry extent along the flow axis', () => {
       // Unit cube spans [-0.5, 0.5] on every axis → flowMin -0.5, invLength 1.
       outliner.attach(host, { edgeFlow: { axis: 'y', speed: 1, width: 0.15 } })

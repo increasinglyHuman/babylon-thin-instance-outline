@@ -267,7 +267,7 @@ Total: probably one v1.0.1 patch (single-mesh) followed by one v1.1.0 (effects b
 - ~~Should the `time` uniform be per-host or scene-global?~~ **Resolved at ratification (2026-07-01): outliner-global — see §2.3 amendment.** Per-host time resets effect phase on every detach/re-attach, and World's linkset rebuilds re-attach constantly; the pop was consumer-visible, so this stopped being an aesthetic question.
 - Should `phase` be in `[0, 1]` or radians? Currently `[0, 1]` with internal multiplication by TAU; document clearly so the user doesn't have to think in radians.
 - Should we expose a `setPhase(host, idx, phase)` separately from `highlight()`? Currently phase comes through `highlight()` only.
-- Should uniform-backed effect *parameters* (speed, period, amplitude — not the effect set itself) become mutable post-attach via a `setEffectParams()`? See §7 attach-time contract.
+- ~~Should uniform-backed effect *parameters* become mutable post-attach via a `setEffectParams()`?~~ **Resolved (2026-07-01, implemented same day):** yes. `setEffectParams(host, { thickness?, pulse?, colorCycle?, edgeFlow? })` live-tunes every uniform-backed parameter with no shader recompile — partial updates supported, updates for effects the host wasn't attached with are silently ignored (their uniforms don't exist in the compiled shader). The effect SET and `edgeFlow.axis` remain attach-time #defines per §7.
 
 Not decided here (except as marked). These shape v1.2.
 

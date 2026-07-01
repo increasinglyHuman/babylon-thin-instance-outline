@@ -192,8 +192,23 @@ scene.onPointerObservable.add((info) => {
   }
 })
 
+// Live-tuning showcase (setEffectParams — no shader recompile): [ ] adjust the
+// sword's flow-band width, - = adjust its outline thickness.
+let swordFlowWidth = 0.08
+let swordThickness = 0.02
+
 window.addEventListener('keydown', (e) => {
   const key = e.key.toLowerCase()
+  if (sword && (key === '[' || key === ']')) {
+    swordFlowWidth = Math.min(0.5, Math.max(0.02, swordFlowWidth + (key === ']' ? 0.02 : -0.02)))
+    outliner.setEffectParams(sword, { edgeFlow: { width: swordFlowWidth } })
+    return
+  }
+  if (sword && (key === '-' || key === '=')) {
+    swordThickness = Math.min(0.12, Math.max(0.005, swordThickness + (key === '=' ? 0.005 : -0.005)))
+    outliner.setEffectParams(sword, { thickness: swordThickness })
+    return
+  }
   if (key === 'r') {
     outliner.clearAll(host)
     outliner.clear(knot, 0)

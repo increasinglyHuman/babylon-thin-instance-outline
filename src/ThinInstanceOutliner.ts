@@ -57,6 +57,24 @@ export interface EdgeFlowOptions {
   boost?: number
 }
 
+/**
+ * Live-tunable parameter updates for {@link ThinInstanceOutliner.setEffectParams}.
+ * Everything here is uniform-backed — updates apply on the next frame with no
+ * shader recompile. What CANNOT change post-attach: the effect SET (which
+ * effects exist) and `edgeFlow.axis` — those are compile-time #defines;
+ * changing them requires detach() → attach().
+ */
+export interface EffectParamUpdates {
+  /** Outline displacement thickness (always updatable, effects or not). */
+  thickness?: number
+  /** Ignored unless the host was attached WITH pulse. */
+  pulse?: Partial<PulseOptions>
+  /** Ignored unless the host was attached WITH colorCycle. */
+  colorCycle?: Partial<ColorCycleOptions>
+  /** Ignored unless the host was attached WITH edgeFlow. `axis` is fixed. */
+  edgeFlow?: Partial<Omit<EdgeFlowOptions, 'axis'>>
+}
+
 /** Options for {@link ThinInstanceOutliner.attach}. All fields optional. */
 export interface AttachOptions {
   /** Outline scale offset along normals, in object-space units. Default 0.03. */
@@ -131,6 +149,9 @@ interface AttachedHost {
   renderObserver: Nullable<Observer<Scene>>
   /** True when a per-instance phase buffer exists (any effect enabled). */
   hasPhaseBuffer: boolean
+  /** Which effects were compiled in at attach — setEffectParams() only touches
+   * uniforms that exist in the compiled shader. */
+  effects: { pulse: boolean; colorCycle: boolean; edgeFlow: boolean }
 }
 
 /** Write a Color3 + alpha=1 to the color buffer at the given instance slot. */
@@ -379,6 +400,7 @@ export class ThinInstanceOutliner {
       isSingleMesh,
       renderObserver: null,
       hasPhaseBuffer: hasEffects,
+      effects: { pulse: !!pulse, colorCycle: !!colorCycle, edgeFlow: !!edgeFlow },
     }
 
     // Per-frame driver, one observer per attached host (ADR-004 §2.3 / §2.2):
@@ -504,6 +526,35 @@ export class ThinInstanceOutliner {
       if (m) state.outlineMesh.thinInstanceSetMatrixAt(i, m, false)
     }
     state.outlineMesh.thinInstanceBufferUpdated('matrix')
+  }
+
+  /**
+   * Live-tune uniform-backed parameters — thickness and effect params — with
+   * no shader recompile (applies next frame). Updates for effects the host
+   * wasn't attached with are silently ignored (their uniforms don't exist in
+   * the compiled shader); enabling/disabling effects or changing the edgeFlow
+   * axis requires detach() → attach(). No-op if the host isn't attached.
+   */
+  setEffectParams(host: Mesh, updates: EffectParamUpdates): void {
+    const state = this.attached.get(host)
+    if (!state) return
+    const m = state.material
+
+    if (updates.thickness !== undefined) m.setFloat('thickness', updates.thickness)
+    if (updates.pulse && state.effects.pulse) {
+      if (updates.pulse.speed !== undefined) m.setFloat('pulseSpeed', updates.pulse.speed)
+      if (updates.pulse.amplitude !== undefined) m.setFloat('pulseAmplitude', updates.pulse.amplitude)
+    }
+    if (updates.colorCycle && state.effects.colorCycle) {
+      if (updates.colorCycle.period !== undefined) m.setFloat('cyclePeriod', updates.colorCycle.period)
+    }
+    if (updates.edgeFlow && state.effects.edgeFlow) {
+      const f = updates.edgeFlow
+      if (f.speed !== undefined) m.setFloat('flowSpeed', f.speed)
+      if (f.width !== undefined) m.setFloat('flowWidth', f.width)
+      if (f.accentColor) m.setColor3('flowAccentColor', f.accentColor)
+      if (f.boost !== undefined) m.setFloat('flowBoost', f.boost)
+    }
   }
 
   /** Dispose the outline mesh and material; clear all state for this host. */

@@ -9,6 +9,7 @@ export type {
   AttachOptions,
   ColorCycleOptions,
   EdgeFlowOptions,
+  EffectParamUpdates,
   HighlightOptions,
   PulseOptions,
 } from './ThinInstanceOutliner'
