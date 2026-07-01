@@ -1,10 +1,17 @@
 # ADR-004 — Animated Effects + Single-Mesh Outline (v1.1 architecture)
 
-**Status:** 🟡 Proposed
-**Date:** 2026-05-08
+**Status:** ✅ Accepted (ratified 2026-07-01, with amendments)
+**Date:** 2026-05-08 (proposed) · 2026-07-01 (accepted)
 **Author:** Allen Partridge + Claude
 **Depends on:** ADR-001 (charter), ADR-002 (technique), ADR-003 (API)
 **Amends:** ADR-001 §2.1 (charter expansion: per-mesh case becomes co-equal with thin-instance case)
+
+> **Ratification amendments (2026-07-01).** Four changes were folded in at acceptance:
+> 1. §2.2 — single-mesh hosts are tracked per frame (moving weapons are THE use case; a rigid mesh parented to an animated bone now works, and only truly skinned geometry stays v2).
+> 2. §2.3 / §8 — the per-host vs scene-global time question is resolved **now**, in favor of a shared clock, for re-attach phase continuity (World rebuilds linksets constantly).
+> 3. §2.5 — the effect composition order is declared deliberate (pulse is a master dimmer).
+> 4. §7 — explicit boundary vs World's GPU projectile/spell effects system, and the attach-time-only effect contract.
+> Construction language throughout defers to ADR-002 §3.1 as amended 2026-07-01 (fresh geometry, never `clone()`).
 
 ---
 
@@ -34,13 +41,23 @@ Rather than maintaining two ShaderMaterial variants with `#define THIN_INSTANCE`
 
 User-facing, this is invisible: `outliner.attach(mesh)` works for any `Mesh` regardless of whether the consumer set up thin-instances. Internally the outliner detects `thinInstanceCount === 0` and falls into a wrapper that adds a single thin-instance mirroring the mesh's world matrix.
 
+The outline mesh itself is constructed per ADR-002 §3.1 as amended 2026-07-01: a fresh `Mesh` with copied position/normal/index data — never `host.clone()` (the shared-geometry lifecycle disturbed host thin-instance bindings on WebGPU; see issue #3).
+
+**Moving hosts (amendment 2026-07-01).** Single meshes *move* — a held weapon's world matrix changes every frame via hand-bone parenting, and "magic weapon in a hand" is the canonical use case for this whole feature. The v1.1 design as proposed mirrored the host's world matrix once at attach, which would leave the outline behind on the first swing. Ratified behavior: the per-host `scene.onBeforeRenderObservable` subscription that drives the `time` uniform (§2.3) ALSO re-mirrors `host.getWorldMatrix()` into the single thin-instance matrix slot each frame, in the single-mesh case only. Consequences:
+
+- A **rigid** mesh attached to an animated bone (sword in hand) tracks correctly — `getWorldMatrix()` reflects bone-driven transforms. This narrows the §7 skinned-mesh limitation: only *actually-skinned* geometry (vertices deformed by bone weights) remains v2.
+- Thin-instance hosts are unchanged: consumers drive matrix updates via `refresh()` exactly as in v1.0. No per-frame mirroring for N-instance hosts — that would be a hidden O(N) cost the consumer didn't ask for.
+- The per-frame mirror is one 16-float write + buffer update; cost is negligible against the observer already firing for `time`.
+
 **Cost:** one extra thin-instance per single-mesh attach (negligible). **Benefit:** one shader, one code path, one set of tests.
 
 ### 2.3 Time uniform via scene observable
 
-A `time` uniform feeds every animated effect. Driven automatically from `scene.onBeforeRenderObservable` — the outliner subscribes once per attached host and updates `time` to elapsed seconds since attach. Consumer doesn't drive it; consumer doesn't need to.
+A `time` uniform feeds every animated effect. Driven automatically from `scene.onBeforeRenderObservable` — the outliner subscribes once per attached host and updates the material's `time` uniform each frame. Consumer doesn't drive it; consumer doesn't need to.
 
-Rationale: alternative (consumer-driven `setTime(t)`) shifts work onto the consumer for no benefit. Pause/resume semantics — if needed — can layer on top via `outliner.setTimeScale(host, 0.0)` (deferred to v1.2; not in v1.1).
+**Time is OUTLINER-GLOBAL, not per-host (amendment 2026-07-01 — resolves former §8 open question 1).** The clock is a single elapsed-seconds counter anchored at outliner construction, shared by every attached host. The originally-proposed per-host `attachedAt` anchor had a consumer-visible flaw: detach/re-attach resets the phase, and World rebuilds linksets (detach → re-attach) constantly — a pulsing weapon would visibly snap to full brightness on every rebuild. A shared clock makes effects continuous across re-attach cycles, and gets choreographed multi-host sync for free.
+
+Rationale for automatic driving: the alternative (consumer-driven `setTime(t)`) shifts work onto the consumer for no benefit. Pause/resume semantics — if needed — can layer on top via `outliner.setTimeScale(host, 0.0)` (deferred to v1.2; not in v1.1).
 
 ### 2.4 Per-instance phase via thin-instance attribute
 
@@ -63,6 +80,8 @@ The fragment shader runs the three effects in this order:
 ```
 
 Each effect is enabled by an `AttachOptions` field (`pulse`, `colorCycle`, `edgeFlow`). When the field is absent, the corresponding shader path is skipped via a `#define` — pay-for-what-you-use compilation cost.
+
+**The ordering is deliberate (amendment 2026-07-01):** pulse multiplies LAST, so it acts as a master intensity over everything — base color, cycled hue, and the additive flow band all breathe together. A steady flow band over a pulsing base is intentionally NOT expressible in v1.1; if real demand appears, a `pulse.affectsFlow: false` flag is the v1.2-shaped answer, not a reordering.
 
 ## 3. Effects in detail
 
@@ -197,21 +216,28 @@ interface AttachedHost {
   }
 
   timeObserver: Observer<Scene> | null  // unsubscribed in detach()
-  attachedAt: number                    // performance.now() at attach time
+  isSingleMesh: boolean                 // true → observer also mirrors host world matrix (§2.2)
 }
 ```
 
-Time uniform is updated each frame via the observer:
+The clock is outliner-level (§2.3 amendment), anchored once at construction:
 ```ts
-material.setFloat('time', (performance.now() - state.attachedAt) / 1000)
+// on the outliner instance
+private readonly clockOrigin = performance.now()
+
+// in each host's observer callback
+material.setFloat('time', (performance.now() - this.clockOrigin) / 1000)
+if (state.isSingleMesh) {
+  state.outlineMesh.thinInstanceSetMatrixAt(0, host.getWorldMatrix(), true) // §2.2 moving-host mirror
+}
 ```
 
 ## 6. Implementation order (governs v1.1 PR sequencing)
 
 Step-by-step, each shippable independently:
 
-1. **Single-mesh internal generalization** — detect `thinInstanceCount === 0` in `attach`, set up a 1-element thin-instance internally. No new public API, just behavior expansion. Ship as v1.0.1 patch.
-2. **Time uniform infrastructure** — observer subscribe/unsubscribe lifecycle, `time` uniform always present. No visible behavior change. Ship as v1.0.2 patch (groundwork).
+1. **Single-mesh internal generalization** — detect `thinInstanceCount === 0` in `attach`, set up a 1-element thin-instance internally, AND the per-frame world-matrix mirror from §2.2 (this pulls the observer subscribe/unsubscribe lifecycle forward from step 2 — a static single-mesh outline that detaches from a moving host is not shippable). No new public API, just behavior expansion. Ship as v1.0.1 patch.
+2. **Time uniform infrastructure** — outliner-global clock (§2.3), `time` uniform always present, riding the observer lifecycle from step 1. No visible behavior change. Ship as v1.0.2 patch (groundwork).
 3. **Pulse effect** — first effect to ship. Smallest math, cleanest API. Ship as v1.1.0.
 4. **Color cycling** — second effect, ship as v1.1.0 alongside pulse (similar shader complexity).
 5. **Edge flow** — most complex. Ship as v1.1.0 alongside pulse + cycle, OR defer to v1.1.1 if it slips.
@@ -221,7 +247,9 @@ Total: probably one v1.0.1 patch (single-mesh) followed by one v1.1.0 (effects b
 
 ## 7. Limitations & explicit non-goals for v1.1
 
-- **Skinned/animated meshes:** still v2. The outline mesh's geometry is static; skinned source meshes have a misaligned outline. ADR-002 §4 unchanged.
+- **Boundary vs GPU particle/spell effects (amendment 2026-07-01).** poqpoq World renders projectiles, spells, explosions, and auras as GPU effects (particles, trails, billboards) — free-flying, volumetric, world-space. This lib's effects are **surface-bound**: they live on the inverted-hull shell, hug the host's silhouette, track its transform, and are per-instance addressable through `highlight()`. The division of labor: *bound to an object's surface/silhouette and needs per-instance addressing → this lib; volumetric/emissive/spatial → the consumer's GPU effects system.* The one visual both could produce — a glowing enchanted blade — belongs here when it must scale (one shader on one sibling mesh serves hundreds of thin-instanced weapons; a particle system per weapon does not) and there when it must billow. **No particles, no trails, no world-space emitters in this lib, ever** — that is charter-level (ADR-001 single responsibility), not a v-next deferral.
+- **Skinned meshes:** narrowed by the §2.2 amendment. A **rigid** mesh parented to an animated bone (sword in hand) works — the per-frame world-matrix mirror tracks bone-driven transforms. Only *actually-skinned* geometry (vertices deformed by bone weights) remains v2: the outline mesh's geometry is static, so a deforming source has a misaligned outline. ADR-002 §4 unchanged.
+- **Effects are fixed at attach (amendment 2026-07-01).** The effect set compiles into the shader via `#define`s (§2.5), so changing which effects a host has — "this weapon just became enchanted" — requires `detach()` → `attach()` with new options (a shader recompile). This is the documented contract, not a bug; effect *parameters* that are uniforms (speed, period, amplitude) could become mutable in v1.2 via `setEffectParams()`, but the effect *set* stays attach-time.
 - **Per-instance thickness:** still v2. Composes poorly with edge-flow (the flow band coordinate assumes uniform thickness in the geometry).
 - **Texture-based effects** (animated noise, lightning patterns): out of scope. Sibling repo or v2 work.
 - **True silhouette-following sweep:** v1.2 candidate, requires the centroid-angle approximation work flagged in §3.3.
@@ -230,11 +258,12 @@ Total: probably one v1.0.1 patch (single-mesh) followed by one v1.1.0 (effects b
 
 ## 8. Open questions deferred to v1.2
 
-- Should the `time` uniform be per-host or scene-global? (Per-host is current design; scene-global would let multiple outliners stay in sync, useful for choreographed effects.)
+- ~~Should the `time` uniform be per-host or scene-global?~~ **Resolved at ratification (2026-07-01): outliner-global — see §2.3 amendment.** Per-host time resets effect phase on every detach/re-attach, and World's linkset rebuilds re-attach constantly; the pop was consumer-visible, so this stopped being an aesthetic question.
 - Should `phase` be in `[0, 1]` or radians? Currently `[0, 1]` with internal multiplication by TAU; document clearly so the user doesn't have to think in radians.
 - Should we expose a `setPhase(host, idx, phase)` separately from `highlight()`? Currently phase comes through `highlight()` only.
+- Should uniform-backed effect *parameters* (speed, period, amplitude — not the effect set itself) become mutable post-attach via a `setEffectParams()`? See §7 attach-time contract.
 
-Not decided here. These shape v1.2.
+Not decided here (except as marked). These shape v1.2.
 
 ## 9. References
 
