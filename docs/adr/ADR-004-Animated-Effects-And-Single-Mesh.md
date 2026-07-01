@@ -228,7 +228,11 @@ private readonly clockOrigin = performance.now()
 // in each host's observer callback
 material.setFloat('time', (performance.now() - this.clockOrigin) / 1000)
 if (state.isSingleMesh) {
-  state.outlineMesh.thinInstanceSetMatrixAt(0, host.getWorldMatrix(), true) // §2.2 moving-host mirror
+  // computeWorldMatrix(true), NOT getWorldMatrix(): the non-forced path
+  // early-returns the cached matrix whenever the scene's renderId hasn't
+  // advanced (an OR with isSynchronized() short-circuits the dirty check),
+  // serving stale transforms for same-frame moves and never-rendered scenes.
+  state.outlineMesh.thinInstanceSetMatrixAt(0, host.computeWorldMatrix(true), true) // §2.2 moving-host mirror
 }
 ```
 

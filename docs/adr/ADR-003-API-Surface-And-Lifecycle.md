@@ -32,7 +32,9 @@ One outliner per scene. Multiple scenes = multiple outliners. The outliner doesn
 attach(hostMesh: Mesh, options?: AttachOptions): void
 ```
 
-Wires the outliner to a thin-instance host. Creates the parallel outline mesh, allocates matrix buffer of size `hostMesh.thinInstanceCount * 16` (all ZERO_SCALE — nothing visible until `highlight` is called).
+Wires the outliner to a host mesh. Creates the parallel outline mesh, allocates matrix buffer of size `hostMesh.thinInstanceCount * 16` (all ZERO_SCALE — nothing visible until `highlight` is called).
+
+> **Amendment 2026-07-01 (ADR-004 §2.2 single-mesh mode).** `thinInstanceCount > 0` is no longer a pre-condition. A host with zero thin instances attaches in **single-mesh mode**: the outline gets an internal 1-element thin instance (address it as index `0`) whose matrix mirrors `hostMesh.getWorldMatrix()` — the full absolute transform, so parent chains and bone attachments track — every frame while highlighted. The remaining hard pre-condition is that the host has position AND normal vertex data; a mesh without either is a silent no-op per §5.
 
 Idempotent: calling `attach` twice on the same host is a no-op (returns immediately, no duplicate outline mesh).
 
@@ -42,7 +44,8 @@ Idempotent: calling `attach` twice on the same host is a no-op (returns immediat
 - `renderingGroupOffset?: number` — outline renders this many groups before host. Default `-1`. Must result in valid renderingGroupId (≥0). If host is in group 0, defaults to using `alwaysSelectAsActiveMesh + renderPriority` instead.
 
 Pre-conditions:
-- `hostMesh` must already have `thinInstanceCount > 0` and a bound matrix buffer.
+- `hostMesh` has position and normal vertex data.
+- For thin-instance mode: `thinInstanceCount > 0` with a bound matrix buffer (zero instances → single-mesh mode per the amendment above).
 - `hostMesh.material` must be set.
 
 Post-conditions:

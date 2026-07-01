@@ -13,6 +13,7 @@
  */
 
 import { Color3, Mesh, Scene, ShaderMaterial, VertexBuffer } from '@babylonjs/core'
+import type { Nullable, Observer } from '@babylonjs/core'
 import { ZERO_SCALE_MATRIX, fillBufferWithZeroScale } from './matrixHelpers'
 import { OUTLINE_COLOR_ATTRIBUTE, OUTLINE_SHADER_PATH, registerOutlineShader } from './outlineShader'
 import { averageNormalsAtSharedPositions } from './smoothNormals'
@@ -61,6 +62,17 @@ interface AttachedHost {
   outlineMesh: Mesh
   material: ShaderMaterial
   shownIndices: Set<number>
+  /** Outline buffer capacity, frozen at attach time. Bounds-checks use THIS,
+   * not the host's live thinInstanceCount — a host that grows after attach
+   * must be re-attached (ADR-003), and a host that shrinks must not let
+   * highlight() write past the outline buffer. */
+  slotCount: number
+  /** True when the host had no thin instances at attach — ADR-004 §2.2
+   * single-mesh mode (internal 1-element thin instance, world-matrix mirror). */
+  isSingleMesh: boolean
+  /** Per-frame world-matrix mirror for single-mesh hosts; null for
+   * thin-instance hosts (their matrices are consumer-driven via refresh()). */
+  renderObserver: Nullable<Observer<Scene>>
 }
 
 /** Write a Color3 + alpha=1 to the color buffer at the given instance slot. */
@@ -87,22 +99,27 @@ export class ThinInstanceOutliner {
   }
 
   /**
-   * Wire the outliner to a thin-instance host. Idempotent: re-attaching the same
-   * host is a silent no-op. The outline mesh is created with all instances hidden;
-   * call {@link highlight} to make individual ones visible.
+   * Wire the outliner to a host mesh. Idempotent: re-attaching the same host is
+   * a silent no-op. The outline mesh is created with all instances hidden; call
+   * {@link highlight} to make individual ones visible.
    *
-   * Pre-conditions:
-   *   - `host.thinInstanceCount > 0`
-   *   - host has a bound matrix buffer (i.e., `thinInstanceSetBuffer('matrix', ...)`
-   *     or repeated `thinInstanceAdd` calls were already made)
+   * Two modes, selected automatically (ADR-004 §2.2):
+   *   - Thin-instance host (`thinInstanceCount > 0` with a bound matrix buffer):
+   *     one outline slot per instance, matrices consumer-driven via highlight/refresh.
+   *   - Single-mesh host (`thinInstanceCount === 0`): the outline is an internal
+   *     1-element thin instance whose matrix mirrors `host.getWorldMatrix()` every
+   *     frame while highlighted — a rigid mesh parented to an animated bone (sword
+   *     in a hand) tracks correctly. Use `highlight(host, 0)`.
    *
-   * Violations are silent no-ops (decorative system; never throws — see ADR-003 §5).
+   * A host missing position or normal data is a silent no-op (decorative system;
+   * never throws — see ADR-003 §5).
    */
   attach(host: Mesh, options: AttachOptions = {}): void {
     if (this.disposed) return
     if (this.attached.has(host)) return
-    const count = host.thinInstanceCount
-    if (!count || count <= 0) return
+    const hostCount = host.thinInstanceCount
+    const isSingleMesh = !hostCount || hostCount <= 0
+    const count = isSingleMesh ? 1 : hostCount
 
     const thickness = options.thickness ?? DEFAULT_THICKNESS
     const color = options.color ?? DEFAULT_COLOR
@@ -131,15 +148,22 @@ export class ThinInstanceOutliner {
     outlineMesh.setVerticesData(VertexBuffer.NormalKind, normalsArr, true)
     if (indices && indices.length > 0) outlineMesh.setIndices(indices)
 
-    // Mirror the host's local transform. The outline is a parallel sibling
-    // (parent stays null — ADR-001 §3.4); thin-instance matrices are host-local,
-    // so the outline's own TRS must match the host's for mirrored matrices to
-    // land at the same world positions. Copies, not references — the host must
-    // stay free to mutate its transform without implicitly dragging the outline.
-    outlineMesh.position.copyFrom(host.position)
-    outlineMesh.rotation.copyFrom(host.rotation)
-    outlineMesh.rotationQuaternion = host.rotationQuaternion ? host.rotationQuaternion.clone() : null
-    outlineMesh.scaling.copyFrom(host.scaling)
+    // Transform strategy differs by mode. The outline is a parallel sibling in
+    // both (parent stays null — ADR-001 §3.4).
+    //   - Thin-instance host: mirror the host's LOCAL TRS, because thin-instance
+    //     matrices are host-local; the mirrored per-instance matrices then land
+    //     at the same world positions. Copies, not references — the host must
+    //     stay free to mutate its transform without implicitly dragging the outline.
+    //   - Single-mesh host: leave the outline at IDENTITY. Its one instance slot
+    //     carries host.getWorldMatrix() — the full absolute transform, including
+    //     any parent chain or bone attachment — so mirroring TRS here would
+    //     double-apply the transform.
+    if (!isSingleMesh) {
+      outlineMesh.position.copyFrom(host.position)
+      outlineMesh.rotation.copyFrom(host.rotation)
+      outlineMesh.rotationQuaternion = host.rotationQuaternion ? host.rotationQuaternion.clone() : null
+      outlineMesh.scaling.copyFrom(host.scaling)
+    }
     // Winding parity: front-face culling (§3.2) is winding-relative, and
     // imported-GLB meshes are typically counter-clockwise. Without this the
     // outline would render its FRONT faces on GLB hosts and cover the host.
@@ -216,16 +240,45 @@ export class ThinInstanceOutliner {
     // (CLAUDE.md): there is no public getter for the raw matrix buffer, and
     // re-setting a rebuilt copy would orphan the consumer's original array.
     // If Babylon ever renames the field, this degrades to a no-op.
-    const hostStorage = (host as unknown as { _thinInstanceDataStorage?: { matrixData: Float32Array | null } })
-      ._thinInstanceDataStorage
-    if (hostStorage?.matrixData) {
-      host.thinInstanceSetBuffer('matrix', hostStorage.matrixData, 16, false)
-      // thinInstanceSetBuffer recomputes count from buffer capacity; restore the
-      // consumer's count in case they render fewer instances than the buffer holds.
-      host.thinInstanceCount = count
+    // Single-mesh hosts have no thin-instance state to guard — skipped.
+    if (!isSingleMesh) {
+      const hostStorage = (host as unknown as { _thinInstanceDataStorage?: { matrixData: Float32Array | null } })
+        ._thinInstanceDataStorage
+      if (hostStorage?.matrixData) {
+        host.thinInstanceSetBuffer('matrix', hostStorage.matrixData, 16, false)
+        // thinInstanceSetBuffer recomputes count from buffer capacity; restore the
+        // consumer's count in case they render fewer instances than the buffer holds.
+        host.thinInstanceCount = count
+      }
     }
 
-    this.attached.set(host, { outlineMesh, material, shownIndices: new Set() })
+    const state: AttachedHost = {
+      outlineMesh,
+      material,
+      shownIndices: new Set(),
+      slotCount: count,
+      isSingleMesh,
+      renderObserver: null,
+    }
+
+    // Single-mesh hosts MOVE (a held weapon's world matrix changes every frame
+    // via bone parenting) — mirror the host's world matrix into the one instance
+    // slot each frame, but ONLY while highlighted: writing it unconditionally
+    // would resurrect a cleared (zero-scale) outline.
+    // computeWorldMatrix(true): the non-forced path early-returns the cached
+    // matrix whenever the scene's renderId hasn't advanced since the last
+    // compute — an OR with isSynchronized(), so vector dirtiness is never even
+    // checked (transformNode.ts). That serves stale matrices for same-frame
+    // moves and never-rendered scenes. Forced compose for ONE mesh is trivial.
+    // ADR-004 §2.2.
+    if (isSingleMesh) {
+      state.renderObserver = this.scene.onBeforeRenderObservable.add(() => {
+        if (!state.shownIndices.has(0)) return
+        state.outlineMesh.thinInstanceSetMatrixAt(0, host.computeWorldMatrix(true), true)
+      })
+    }
+
+    this.attached.set(host, state)
   }
 
   /**
@@ -239,10 +292,15 @@ export class ThinInstanceOutliner {
   highlight(host: Mesh, instanceIndex: number, options?: HighlightOptions): void {
     const state = this.attached.get(host)
     if (!state) return
-    if (instanceIndex < 0 || instanceIndex >= host.thinInstanceCount) return
+    // Bounds-check against the attach-time buffer capacity, not the host's live
+    // count: a single-mesh host reports thinInstanceCount 0 but has slot 0, and
+    // a thin-instance host that grew after attach has no outline slots for the
+    // new indices (re-attach required per ADR-003).
+    if (instanceIndex < 0 || instanceIndex >= state.slotCount) return
 
-    const sourceMatrices = host.thinInstanceGetWorldMatrices()
-    const sourceMatrix = sourceMatrices[instanceIndex]
+    const sourceMatrix = state.isSingleMesh
+      ? host.computeWorldMatrix(true) // full absolute transform (forced — see attach observer note); outline sits at identity
+      : host.thinInstanceGetWorldMatrices()[instanceIndex]
     if (!sourceMatrix) return
 
     state.outlineMesh.thinInstanceSetMatrixAt(instanceIndex, sourceMatrix, true)
@@ -296,7 +354,12 @@ export class ThinInstanceOutliner {
     const state = this.attached.get(host)
     if (!state) return
 
-    const sourceMatrices = host.thinInstanceGetWorldMatrices()
+    // Single-mesh hosts self-refresh every frame via the render observer;
+    // an explicit call is still honored for symmetry (e.g. force an update
+    // between a transform change and the next render).
+    const sourceMatrices = state.isSingleMesh
+      ? [host.computeWorldMatrix(true)]
+      : host.thinInstanceGetWorldMatrices()
     const targets =
       instanceIndex !== undefined
         ? state.shownIndices.has(instanceIndex)
@@ -318,6 +381,9 @@ export class ThinInstanceOutliner {
     const state = this.attached.get(host)
     if (!state) return
 
+    if (state.renderObserver) {
+      this.scene.onBeforeRenderObservable.remove(state.renderObserver)
+    }
     state.outlineMesh.dispose()
     state.material.dispose()
 

@@ -1,7 +1,8 @@
 /**
  * demo.ts — visual smoke-test for ThinInstanceOutliner against real WebGL.
- * Renders 100 thin-instanced cubes. 3 are pre-outlined. Click toggles per-instance.
- * R clears all; A outlines all.
+ * Renders 100 thin-instanced cubes (3 pre-outlined; click toggles per-instance;
+ * R clears all; A outlines all) plus an orbiting torus knot exercising
+ * single-mesh mode — its outline must visibly track the motion.
  *
  * This file is intentionally thick on inline comments because it doubles as the
  * canonical "how to use this library" example for newcomers.
@@ -70,6 +71,32 @@ const PRESET_COLORS: Array<[number, Color3]> = [
 ]
 for (const [idx, color] of PRESET_COLORS) outliner.highlight(host, idx, { color })
 
+// --- Single-mesh mode (ADR-004 §2.2): an orbiting torus knot with ZERO thin
+// instances. attach() detects that and mirrors the knot's world matrix into an
+// internal 1-element thin instance every frame — the outline tracks the motion
+// with no consumer code (no refresh() calls). Click the knot to toggle.
+const knot = MeshBuilder.CreateTorusKnot(
+  'knot',
+  { radius: 0.9, tube: 0.28, radialSegments: 96, tubularSegments: 24 },
+  scene,
+)
+const knotMaterial = new StandardMaterial('knotMat', scene)
+knotMaterial.diffuseColor = new Color3(0.75, 0.55, 0.35)
+knotMaterial.specularColor = new Color3(0.2, 0.18, 0.12)
+knot.material = knotMaterial
+
+outliner.attach(knot, { color: new Color3(1.0, 0.45, 0.9), thickness: 0.06 })
+outliner.highlight(knot, 0)
+
+let knotAngle = 0
+scene.onBeforeRenderObservable.add(() => {
+  knotAngle += engine.getDeltaTime() * 0.0005
+  const orbit = ((GRID - 1) / 2 + 3) * SPACING
+  knot.position.set(Math.cos(knotAngle) * orbit, 1.2, Math.sin(knotAngle) * orbit)
+  knot.rotation.y = -knotAngle
+  knot.rotation.x = knotAngle * 0.7
+})
+
 // --- Picking: click to toggle outline per-instance
 // Cycles through a small palette so each click can introduce a new color.
 const PALETTE: Color3[] = [
@@ -84,7 +111,14 @@ let paletteCursor = 0
 scene.onPointerObservable.add((info) => {
   if (info.type !== PointerEventTypes.POINTERDOWN) return
   const pickInfo = info.pickInfo
-  if (!pickInfo?.hit || pickInfo.pickedMesh !== host) return
+  if (!pickInfo?.hit) return
+  if (pickInfo.pickedMesh === knot) {
+    // Single-mesh host: always slot 0.
+    if (outliner.isHighlighted(knot, 0)) outliner.clear(knot, 0)
+    else outliner.highlight(knot, 0)
+    return
+  }
+  if (pickInfo.pickedMesh !== host) return
   const idx = pickInfo.thinInstanceIndex
   if (idx === undefined || idx < 0) return
   if (outliner.isHighlighted(host, idx)) {

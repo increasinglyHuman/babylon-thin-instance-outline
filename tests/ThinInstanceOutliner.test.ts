@@ -90,10 +90,20 @@ describe('ThinInstanceOutliner', () => {
       expect(host.metadata.outlineMesh).toBe(first)
     })
 
-    it('silently no-ops when host has zero thin instances', () => {
-      const empty = MeshBuilder.CreateBox('empty', { size: 1 }, scene)
-      outliner.attach(empty)
-      expect(empty.metadata?.outlineMesh).toBeUndefined()
+    it('a host with zero thin instances attaches in single-mesh mode (ADR-004 §2.2)', () => {
+      // v1.0.0 no-op'd here; since ADR-004 ratification a plain mesh gets an
+      // internal 1-element thin-instance outline.
+      const plain = MeshBuilder.CreateBox('plain', { size: 1 }, scene)
+      outliner.attach(plain)
+      const outlineMesh: Mesh = plain.metadata.outlineMesh
+      expect(outlineMesh).toBeDefined()
+      expect(outlineMesh.thinInstanceCount).toBe(1)
+    })
+
+    it('silently no-ops when host has no vertex data', () => {
+      const bare = new Mesh('bare', scene)
+      outliner.attach(bare)
+      expect(bare.metadata?.outlineMesh).toBeUndefined()
     })
 
     it('configures the material for back-face-only rendering (cullBackFaces = false culls FRONT)', () => {
@@ -390,6 +400,95 @@ describe('ThinInstanceOutliner', () => {
       // Re-highlight with no color: still green
       outliner.highlight(host, 2)
       expect(readColorAt(host.metadata.outlineMesh, 2)).toEqual([0, 1, 0, 1])
+    })
+  })
+
+  describe('single-mesh mode (ADR-004 §2.2)', () => {
+    let plain: Mesh
+
+    beforeEach(() => {
+      plain = MeshBuilder.CreateBox('plain', { size: 1 }, scene)
+    })
+
+    it('outline sits at identity; the instance slot carries the host WORLD matrix', () => {
+      plain.position.set(3, 4, 5)
+      outliner.attach(plain)
+      outliner.highlight(plain, 0)
+
+      const outlineMesh: Mesh = plain.metadata.outlineMesh
+      // Outline transform must stay identity — the world matrix goes into the
+      // slot; mirroring TRS too would double-apply the transform.
+      expect(outlineMesh.position.asArray()).toEqual([0, 0, 0])
+      const m = outlineMesh.thinInstanceGetWorldMatrices()[0].m
+      expect(m[12]).toBeCloseTo(3, 6)
+      expect(m[13]).toBeCloseTo(4, 6)
+      expect(m[14]).toBeCloseTo(5, 6)
+    })
+
+    it('parent transforms are honored (world matrix, not local TRS)', () => {
+      const parent = MeshBuilder.CreateBox('parent', { size: 1 }, scene)
+      parent.position.set(100, 0, 0)
+      plain.parent = parent
+      plain.position.set(0, 2, 0)
+
+      outliner.attach(plain)
+      outliner.highlight(plain, 0)
+
+      const m = (plain.metadata.outlineMesh as Mesh).thinInstanceGetWorldMatrices()[0].m
+      expect(m[12]).toBeCloseTo(100, 6)
+      expect(m[13]).toBeCloseTo(2, 6)
+    })
+
+    it('render observer tracks a moving host while highlighted', () => {
+      outliner.attach(plain)
+      outliner.highlight(plain, 0)
+
+      plain.position.set(10, -2, 7)
+      scene.onBeforeRenderObservable.notifyObservers(scene)
+
+      const m = (plain.metadata.outlineMesh as Mesh).thinInstanceGetWorldMatrices()[0].m
+      expect(m[12]).toBeCloseTo(10, 6)
+      expect(m[13]).toBeCloseTo(-2, 6)
+      expect(m[14]).toBeCloseTo(7, 6)
+    })
+
+    it('render observer does NOT resurrect a cleared outline', () => {
+      outliner.attach(plain)
+      outliner.highlight(plain, 0)
+      outliner.clear(plain, 0)
+
+      plain.position.set(10, 0, 0)
+      scene.onBeforeRenderObservable.notifyObservers(scene)
+
+      const m = (plain.metadata.outlineMesh as Mesh).thinInstanceGetWorldMatrices()[0].m
+      // Still zero-scale (hidden), despite the host moving
+      for (let col = 0; col < 3; col++) {
+        for (let row = 0; row < 4; row++) {
+          expect(m[col * 4 + row]).toBeCloseTo(0, 6)
+        }
+      }
+    })
+
+    it('detach removes the render observer', () => {
+      expect(scene.onBeforeRenderObservable.hasObservers()).toBe(false)
+      outliner.attach(plain)
+      expect(scene.onBeforeRenderObservable.hasObservers()).toBe(true)
+      outliner.detach(plain)
+      // hasObservers, not observers.length: Observable.remove() defers the
+      // actual splice to a setTimeout(0) but decrements the live count.
+      expect(scene.onBeforeRenderObservable.hasObservers()).toBe(false)
+    })
+
+    it('thin-instance hosts do not register a render observer', () => {
+      const before = scene.onBeforeRenderObservable.observers.length
+      outliner.attach(host) // the thin-instanced fixture
+      expect(scene.onBeforeRenderObservable.observers.length).toBe(before)
+    })
+
+    it('bounds-checks against the single slot (index 1 is a silent no-op)', () => {
+      outliner.attach(plain)
+      outliner.highlight(plain, 1)
+      expect(outliner.isHighlighted(plain, 1)).toBe(false)
     })
   })
 
