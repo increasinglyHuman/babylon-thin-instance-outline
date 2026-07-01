@@ -109,31 +109,49 @@ export class ThinInstanceOutliner {
     const groupOffset = options.renderingGroupOffset ?? DEFAULT_RENDERING_GROUP_OFFSET
     const smoothNormals = options.smoothNormals ?? true
 
-    // Clone the host. Babylon's Mesh.clone shares the underlying Geometry, and
-    // thin-instance state lives on the geometry — so without makeGeometryUnique()
-    // the outline mesh's thinInstanceSetBuffer would clobber the host's matrix
-    // buffer on the shared geometry, suppressing every host instance whose slot
-    // is zero-scale in the outline buffer (i.e., every un-highlighted instance).
-    // The Babylon thin-instance docs call this out explicitly:
-    //   "If you want to create a thin instance from a cloned mesh, you have to
-    //    first make sure that you call clonedMesh.makeGeometryUnique()."
-    const outlineMesh = host.clone(`${host.name}_outline`, null, true)
-    if (!outlineMesh) return
-    outlineMesh.makeGeometryUnique()
-    outlineMesh.parent = null // sibling, NEVER child — see ADR-001 §3.4
+    // Build the outline mesh from scratch with its OWN geometry — never clone
+    // the host. Mesh.clone shares the underlying Geometry (thin-instance
+    // world0..3 vertex buffers live on the geometry), and even with
+    // makeGeometryUnique() called immediately after, the share→un-share
+    // lifecycle disturbs the host's thin-instance GPU bindings on WebGPU: the
+    // host's own instances stop rendering until its matrix buffer is re-set.
+    // Observed 2026-07-01 in poqpoq World with imported-GLB hosts (primitive
+    // hosts were unaffected). Copying vertex data into a fresh mesh means the
+    // host's geometry is never shared, so nothing in this method can touch the
+    // host's buffers. See ADR-002 §3.1 (amended 2026-07-01).
+    const positions = host.getVerticesData(VertexBuffer.PositionKind, false, true)
+    const normals = host.getVerticesData(VertexBuffer.NormalKind, false, true)
+    if (!positions || !normals) return // inverted hull needs both — silent no-op per ADR-003 §5
+    const indices = host.getIndices(false, true)
+
+    const outlineMesh = new Mesh(`${host.name}_outline`, this.scene)
+    outlineMesh.setVerticesData(VertexBuffer.PositionKind, positions, false)
+    // Normals set updatable: the smoothNormals preprocess below rewrites them.
+    const normalsArr = normals instanceof Float32Array ? normals : new Float32Array(normals)
+    outlineMesh.setVerticesData(VertexBuffer.NormalKind, normalsArr, true)
+    if (indices && indices.length > 0) outlineMesh.setIndices(indices)
+
+    // Mirror the host's local transform. The outline is a parallel sibling
+    // (parent stays null — ADR-001 §3.4); thin-instance matrices are host-local,
+    // so the outline's own TRS must match the host's for mirrored matrices to
+    // land at the same world positions. Copies, not references — the host must
+    // stay free to mutate its transform without implicitly dragging the outline.
+    outlineMesh.position.copyFrom(host.position)
+    outlineMesh.rotation.copyFrom(host.rotation)
+    outlineMesh.rotationQuaternion = host.rotationQuaternion ? host.rotationQuaternion.clone() : null
+    outlineMesh.scaling.copyFrom(host.scaling)
+    // Winding parity: front-face culling (§3.2) is winding-relative, and
+    // imported-GLB meshes are typically counter-clockwise. Without this the
+    // outline would render its FRONT faces on GLB hosts and cover the host.
+    outlineMesh.sideOrientation = host.sideOrientation
+    outlineMesh.isPickable = false // decorative; never intercept picks meant for the host
 
     // Smooth normals at shared positions so hard-edge meshes don't tear at
     // corners during inverted-hull displacement. Mutates only the outline
-    // mesh's normals — host's normals are untouched (host kept its own
-    // geometry instance via makeGeometryUnique above).
+    // mesh's normals — the host's buffers are force-copied above, never shared.
     if (smoothNormals) {
-      const positions = outlineMesh.getVerticesData(VertexBuffer.PositionKind)
-      const normals = outlineMesh.getVerticesData(VertexBuffer.NormalKind)
-      if (positions && normals) {
-        const normalsArr = normals instanceof Float32Array ? normals : new Float32Array(normals)
-        averageNormalsAtSharedPositions(positions, normalsArr)
-        outlineMesh.updateVerticesData(VertexBuffer.NormalKind, normalsArr)
-      }
+      averageNormalsAtSharedPositions(positions, normalsArr)
+      outlineMesh.updateVerticesData(VertexBuffer.NormalKind, normalsArr)
     }
 
     // The outline mesh's bounding info is irrelevant for our purposes — we don't
@@ -188,6 +206,24 @@ export class ThinInstanceOutliner {
     host.metadata.outlineMesh = outlineMesh
     if (!outlineMesh.metadata) outlineMesh.metadata = {}
     outlineMesh.metadata.isOutlineFor = host.uniqueId
+
+    // Belt-and-suspenders guard for the WebGPU blanking regression: re-setting
+    // the host's matrix buffer with the SAME backing array (consumer-held
+    // references stay valid) forces Babylon to rebuild the host's world0..3
+    // bindings if anything above disturbed them. With the fresh-geometry build
+    // this should be a no-op, but the bug shipped once and the guard is cheap.
+    // Deliberate, guarded exception to the "no Babylon internals" rule
+    // (CLAUDE.md): there is no public getter for the raw matrix buffer, and
+    // re-setting a rebuilt copy would orphan the consumer's original array.
+    // If Babylon ever renames the field, this degrades to a no-op.
+    const hostStorage = (host as unknown as { _thinInstanceDataStorage?: { matrixData: Float32Array | null } })
+      ._thinInstanceDataStorage
+    if (hostStorage?.matrixData) {
+      host.thinInstanceSetBuffer('matrix', hostStorage.matrixData, 16, false)
+      // thinInstanceSetBuffer recomputes count from buffer capacity; restore the
+      // consumer's count in case they render fewer instances than the buffer holds.
+      host.thinInstanceCount = count
+    }
 
     this.attached.set(host, { outlineMesh, material, shownIndices: new Set() })
   }

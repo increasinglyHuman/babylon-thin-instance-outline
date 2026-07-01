@@ -14,6 +14,7 @@ import {
   Mesh,
   MeshBuilder,
   NullEngine,
+  Quaternion,
   Scene,
   VertexBuffer,
 } from '@babylonjs/core'
@@ -115,14 +116,75 @@ describe('ThinInstanceOutliner', () => {
     })
 
     it('REGRESSION: outline mesh has unique geometry so its matrix buffer cannot clobber host', () => {
-      // Without makeGeometryUnique() in attach(), Mesh.clone shares the geometry,
-      // and thin-instance state lives on the geometry — so outlineMesh.thinInstanceSetBuffer
-      // would silently overwrite host's matrix buffer, suppressing every un-highlighted
-      // host instance. Verified manually 2026-05-07 via playwright; locking in the
-      // invariant here so we never regress.
+      // Thin-instance state lives on the Geometry. The outline mesh is built
+      // from scratch with copied vertex data (NOT cloned — clone shares the
+      // geometry, and even clone→makeGeometryUnique disturbed the host's
+      // thin-instance bindings on WebGPU; see the test below). Lock in that the
+      // geometries are distinct and the copy is complete.
       outliner.attach(host)
       const outlineMesh: Mesh = host.metadata.outlineMesh
       expect(outlineMesh.geometry).not.toBe(host.geometry)
+      expect(outlineMesh.getTotalVertices()).toBe(host.getTotalVertices())
+      expect(outlineMesh.getTotalIndices()).toBe(host.getTotalIndices())
+    })
+
+    it('REGRESSION: attach leaves the host thin-instance state fully intact (WebGPU blanking, 2026-07-01)', () => {
+      // On WebGPU, building the outline via host.clone() + makeGeometryUnique()
+      // disturbed the host's world0..3 bindings: the host's own thin instances
+      // stopped rendering (first attach per host, imported-GLB meshes) until
+      // its matrix buffer was re-set. Assert the host's observable thin-instance
+      // state is byte-identical and still bound after attach.
+      const geometryBefore = host.geometry
+      const matricesBefore = host.thinInstanceGetWorldMatrices().map((m) => Array.from(m.m))
+
+      outliner.attach(host)
+
+      expect(host.geometry).toBe(geometryBefore)
+      expect(host.thinInstanceCount).toBe(HOST_INSTANCE_COUNT)
+      const matricesAfter = host.thinInstanceGetWorldMatrices().map((m) => Array.from(m.m))
+      expect(matricesAfter).toEqual(matricesBefore)
+      for (const kind of ['world0', 'world1', 'world2', 'world3']) {
+        expect(host.getVertexBuffer(kind)).toBeTruthy()
+      }
+    })
+
+    it('REGRESSION: attach preserves a host thinInstanceCount smaller than its buffer capacity', () => {
+      // The defensive matrix-buffer re-set inside attach() must not silently
+      // bump thinInstanceCount back up to buffer capacity.
+      const bigHost = MeshBuilder.CreateBox('bigHost', { size: 1 }, scene)
+      const buf = new Float32Array(10 * 16)
+      for (let i = 0; i < 10; i++) {
+        Matrix.Translation(i, 0, 0).copyToArray(buf, i * 16)
+      }
+      bigHost.thinInstanceSetBuffer('matrix', buf, 16, false)
+      bigHost.thinInstanceCount = 6 // render fewer than capacity
+      outliner.attach(bigHost)
+      expect(bigHost.thinInstanceCount).toBe(6)
+    })
+
+    it('mirrors the host local transform onto the outline mesh (independent copies)', () => {
+      host.position.set(3, 4, 5)
+      host.scaling.set(2, 2, 2)
+      host.rotationQuaternion = Quaternion.FromEulerAngles(0, Math.PI / 2, 0)
+      outliner.attach(host)
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+      expect(outlineMesh.position.asArray()).toEqual([3, 4, 5])
+      expect(outlineMesh.scaling.asArray()).toEqual([2, 2, 2])
+      expect(outlineMesh.rotationQuaternion?.equals(host.rotationQuaternion)).toBe(true)
+      // Copies, not references — mutating the host later must not drag the outline.
+      expect(outlineMesh.position).not.toBe(host.position)
+      expect(outlineMesh.rotationQuaternion).not.toBe(host.rotationQuaternion)
+      expect(outlineMesh.isPickable).toBe(false)
+    })
+
+    it('does not pollute pre-existing host metadata (GLB hosts carry gltf extras)', () => {
+      // With clone(), the outline mesh shared the host's metadata OBJECT, so
+      // tagging the outline also wrote isOutlineFor into the host's metadata.
+      host.metadata = { gltf: { extras: true } }
+      outliner.attach(host)
+      expect(host.metadata.isOutlineFor).toBeUndefined()
+      expect(host.metadata.gltf).toEqual({ extras: true })
+      expect(host.metadata.outlineMesh.metadata).not.toBe(host.metadata)
     })
   })
 

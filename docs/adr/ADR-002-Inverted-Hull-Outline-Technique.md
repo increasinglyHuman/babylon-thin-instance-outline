@@ -104,9 +104,10 @@ Per highlight:
 ### 3.1 Outline mesh creation
 
 When `attach(hostMesh)` is called:
-- Clone the host (`hostMesh.clone(name, null, doNotCloneChildren=true)`)
-- **Call `outlineMesh.makeGeometryUnique()` immediately after cloning.** This is non-negotiable. `Mesh.clone` shares the underlying `Geometry`, and Babylon's thin-instance state lives on the geometry — without the unique call, `outlineMesh.thinInstanceSetBuffer('matrix', ...)` would clobber the host's matrix buffer on the shared geometry, suppressing every host instance whose corresponding outline slot is zero-scale. The Babylon thin-instance docs call this out in their Limitations section. Verified live against Babylon 8.56 on 2026-05-07; locked in via a regression test in `tests/ThinInstanceOutliner.test.ts`.
-- Set `outlineMesh.parent = null` (NEVER child — see ADR-001 §3.4 / CLAUDE.md architecture rules)
+- **Build the outline mesh from scratch — never clone the host.** Create `new Mesh(name, scene)` and copy the host's position/normal/index data (force-copied arrays via `getVerticesData(kind, false, true)` / `getIndices(false, true)`) onto it with `setVerticesData`/`setIndices`. The host's `Geometry` is never shared, so nothing in `attach()` can touch the host's thin-instance buffers. *(Amended 2026-07-01 — see amendment note below.)*
+- Mirror the host's local TRS (`position`, `rotation`, `rotationQuaternion`, `scaling`) and `sideOrientation` onto the outline mesh as independent copies. TRS because thin-instance matrices are host-local; `sideOrientation` because front-face culling (§3.2) is winding-relative and imported-GLB meshes are typically counter-clockwise — without it the outline renders its front faces on GLB hosts and covers the host.
+- Set `outlineMesh.isPickable = false` (decorative mesh; never intercepts picks meant for the host)
+- Parent stays `null` (NEVER child — see ADR-001 §3.4 / CLAUDE.md architecture rules)
 - Apply the outline material (see §3.2)
 - Allocate matrix buffer of size `hostMesh.thinInstanceCount * 16`, all entries = `ZERO_SCALE_MATRIX`
 - `outlineMesh.thinInstanceSetBuffer('matrix', buffer, 16, false)` — non-static (we mutate)
@@ -114,6 +115,9 @@ When `attach(hostMesh)` is called:
 - Allocate per-instance color buffer (vec4 RGBA, stride 4), every slot initialized to the per-attach default color
 - `outlineMesh.thinInstanceSetBuffer('outlineInstanceColor', colorBuffer, 4, false)`
 - Tag the outline mesh: `outlineMesh.metadata = { isOutlineFor: hostMesh.uniqueId }`
+- Finally, defensively re-set the host's matrix buffer with its **same backing array** (`host.thinInstanceSetBuffer('matrix', <existing matrixData>, 16, false)`) and restore `host.thinInstanceCount` — a cheap regression guard that forces Babylon to rebuild the host's `world0..3` bindings if anything disturbed them. This is a deliberate, guarded exception to the "no Babylon internals" rule: there is no public getter for the raw matrix buffer, and re-setting a rebuilt copy would orphan the consumer's original array.
+
+> **Amendment 2026-07-01 — WebGPU blanking bug.** The original spec cloned the host (`hostMesh.clone(name, null, true)`) and called `outlineMesh.makeGeometryUnique()` immediately after, per the Babylon docs' clone-then-unique guidance. Empirically that was insufficient on **WebGPU** (Babylon 8.x, imported-GLB hosts; primitive-geometry hosts unaffected): the transient shared-geometry window — clone shares the geometry, `makeGeometryUnique()` copies and reapplies — disturbed the host's `world0..3` GPU bindings, and the host's own thin instances stopped rendering on first attach. The host's CPU-side matrix data stayed correct; re-setting its matrix buffer fully restored rendering (the heal poqpoq World shipped consumer-side in `ThinInstanceHighlighter.applyHighlight`, dated 2026-07-01). Building the outline geometry from copied vertex data removes the shared-geometry window entirely and is now the required construction path. Locked in by the "attach leaves the host thin-instance state fully intact" regression test.
 
 ### 3.2 Outline material
 
