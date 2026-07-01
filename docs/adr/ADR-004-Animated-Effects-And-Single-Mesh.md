@@ -135,9 +135,11 @@ outliner.attach(mesh, {
 
 **Math:**
 ```glsl
-float band_pos = mod(local_pos[axis] * inv_axis_length + t * speed, 1.0);
+float band_pos = fract((local_pos[axis] - axis_min) * inv_axis_length + t * speed);
 float band_dist = abs(band_pos - 0.5);  // 0 = center of band, 0.5 = far from band
-float band_intensity = smoothstep(width, 0.0, band_dist);
+// Complement form, NOT smoothstep(width, 0.0, dist): reversed smoothstep
+// edges are undefined behavior in GLSL. (Corrected at implementation, v1.1.)
+float band_intensity = 1.0 - smoothstep(0.0, width, band_dist);
 gl_FragColor.rgb += boost * band_intensity * accent_color;
 ```
 

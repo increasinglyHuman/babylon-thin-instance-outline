@@ -1,26 +1,32 @@
 /**
  * demo.ts — visual smoke-test for ThinInstanceOutliner against real WebGL.
  * Renders 100 thin-instanced cubes (3 pre-outlined; click toggles per-instance;
- * R clears all; A outlines all) plus an orbiting torus knot exercising
- * single-mesh mode — its outline must visibly track the motion.
+ * R clears all; A outlines a phased rainbow), an orbiting torus knot exercising
+ * single-mesh mode, and a slowly-turning greatsword GLB running the full
+ * ADR-004 effects stack (edgeFlow along the blade + pulse + colorCycle on
+ * the knot). Every outline must visibly track its host's motion.
  *
  * This file is intentionally thick on inline comments because it doubles as the
  * canonical "how to use this library" example for newcomers.
  */
 
 import {
+  AbstractMesh,
   ArcRotateCamera,
   Color3,
   Color4,
   Engine,
   HemisphericLight,
+  ImportMeshAsync,
   Matrix,
+  Mesh,
   MeshBuilder,
   PointerEventTypes,
   Scene,
   StandardMaterial,
   Vector3,
 } from '@babylonjs/core'
+import '@babylonjs/loaders/glTF' // registers the .glb loader (side effect)
 import { ThinInstanceOutliner } from '../src'
 
 const canvas = document.getElementById('render') as HTMLCanvasElement
@@ -60,6 +66,9 @@ const outliner = new ThinInstanceOutliner(scene)
 outliner.attach(host, {
   color: new Color3(0.55, 0.8, 1.0),
   thickness: 0.045,
+  // Per-host pulse: every highlighted cube breathes. The 'A' rainbow assigns
+  // per-instance phases so the grid pulses as a traveling wave, not in lockstep.
+  pulse: { speed: 2.5, amplitude: 0.4 },
 })
 
 // Pre-outline 3 instances with different per-instance colors:
@@ -85,7 +94,14 @@ knotMaterial.diffuseColor = new Color3(0.75, 0.55, 0.35)
 knotMaterial.specularColor = new Color3(0.2, 0.18, 0.12)
 knot.material = knotMaterial
 
-outliner.attach(knot, { color: new Color3(1.0, 0.45, 0.9), thickness: 0.06 })
+// Knot effects: colorCycle rotates the outline hue continuously; pulse breathes
+// it. Both driven by the outliner-global clock — zero per-frame consumer code.
+outliner.attach(knot, {
+  color: new Color3(1.0, 0.45, 0.9),
+  thickness: 0.06,
+  colorCycle: { period: 5 },
+  pulse: { speed: 1.8, amplitude: 0.3 },
+})
 outliner.highlight(knot, 0)
 
 let knotAngle = 0
@@ -96,6 +112,52 @@ scene.onBeforeRenderObservable.add(() => {
   knot.rotation.y = -knotAngle
   knot.rotation.x = knotAngle * 0.7
 })
+
+// --- Greatsword GLB: the ADR-004 motivating use case — "energy traveling
+// along a sword's edge". edgeFlow sends a bright band down the blade's long
+// axis while pulse breathes the whole outline. Single-mesh mode again: the
+// sword turns slowly and the outline tracks via the world-matrix mirror.
+let sword: Mesh | null = null
+ImportMeshAsync('./assets/greatsword.glb', scene)
+  .then((result) => {
+    // Rigged GLBs carry transform nodes and possibly multiple primitives —
+    // outline the largest mesh that actually has geometry.
+    const withGeometry = result.meshes.filter(
+      (m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0,
+    )
+    if (withGeometry.length === 0) return
+    sword = withGeometry.reduce((a, b) => (a.getTotalVertices() >= b.getTotalVertices() ? a : b))
+
+    // Deterministic look without an environment texture: GLB PBR materials
+    // render near-black with only a hemispheric light, so swap in steel.
+    const steel = new StandardMaterial('steel', scene)
+    steel.diffuseColor = new Color3(0.55, 0.58, 0.65)
+    steel.specularColor = new Color3(0.5, 0.5, 0.55)
+    for (const m of withGeometry) m.material = steel
+
+    // Float the sword above the grid, point-up, turning like a legendary drop.
+    const root = result.meshes[0] as AbstractMesh
+    root.position.set(0, 3.2, 0)
+    root.scaling.setAll(1.5)
+    scene.onBeforeRenderObservable.add(() => {
+      root.rotation.y += engine.getDeltaTime() * 0.0004
+    })
+
+    // The blade's long axis in OBJECT space: measure the geometry extents and
+    // pick the dominant one, so the demo doesn't care how the asset was authored.
+    const ext = sword.getBoundingInfo().boundingBox.extendSize
+    const axis: 'x' | 'y' | 'z' =
+      ext.x > ext.y ? (ext.x > ext.z ? 'x' : 'z') : ext.y > ext.z ? 'y' : 'z'
+
+    outliner.attach(sword, {
+      color: new Color3(0.35, 0.65, 1.0),
+      thickness: 0.02,
+      pulse: { speed: 1.5, amplitude: 0.35 },
+      edgeFlow: { axis, speed: 0.5, width: 0.08, accentColor: new Color3(0.8, 1.0, 1.0), boost: 2.0 },
+    })
+    outliner.highlight(sword, 0)
+  })
+  .catch((e) => console.warn('[demo] greatsword failed to load:', e))
 
 // --- Picking: click to toggle outline per-instance
 // Cycles through a small palette so each click can introduce a new color.
@@ -112,10 +174,11 @@ scene.onPointerObservable.add((info) => {
   if (info.type !== PointerEventTypes.POINTERDOWN) return
   const pickInfo = info.pickInfo
   if (!pickInfo?.hit) return
-  if (pickInfo.pickedMesh === knot) {
-    // Single-mesh host: always slot 0.
-    if (outliner.isHighlighted(knot, 0)) outliner.clear(knot, 0)
-    else outliner.highlight(knot, 0)
+  if (pickInfo.pickedMesh === knot || (sword && pickInfo.pickedMesh === sword)) {
+    // Single-mesh hosts: always slot 0.
+    const m = pickInfo.pickedMesh as Mesh
+    if (outliner.isHighlighted(m, 0)) outliner.clear(m, 0)
+    else outliner.highlight(m, 0)
     return
   }
   if (pickInfo.pickedMesh !== host) return
@@ -131,12 +194,17 @@ scene.onPointerObservable.add((info) => {
 
 window.addEventListener('keydown', (e) => {
   const key = e.key.toLowerCase()
-  if (key === 'r') outliner.clearAll(host)
+  if (key === 'r') {
+    outliner.clearAll(host)
+    outliner.clear(knot, 0)
+    if (sword) outliner.clear(sword, 0)
+  }
   else if (key === 'a') {
-    // Random rainbow assignment for the visual flex
+    // Random rainbow assignment for the visual flex; phase spreads the pulse
+    // across the grid so it reads as a wave (ADR-004 §2.4).
     for (let i = 0; i < COUNT; i++) {
       const hue = (i * 137.5) % 360 // golden-angle hue spread
-      outliner.highlight(host, i, { color: hslToColor3(hue, 0.7, 0.65) })
+      outliner.highlight(host, i, { color: hslToColor3(hue, 0.7, 0.65), phase: i / COUNT })
     }
   }
 })

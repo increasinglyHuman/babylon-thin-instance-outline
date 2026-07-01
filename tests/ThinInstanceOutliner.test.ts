@@ -496,6 +496,71 @@ describe('ThinInstanceOutliner', () => {
     })
   })
 
+  describe('animated effects (ADR-004)', () => {
+    /** Read the effect defines off the outline material (public options getter). */
+    function definesOf(m: Mesh): string[] {
+      return (m.material as import('@babylonjs/core').ShaderMaterial).options.defines
+    }
+
+    /** Read the phase buffer slot; same internals-peek pattern as readColorAt. */
+    function readPhaseAt(outlineMesh: Mesh, index: number): number | undefined {
+      return outlineMesh._userThinInstanceBuffersStorage?.data?.outlineInstancePhase?.[index]
+    }
+
+    it('no effects → no effect defines, no phase buffer (v1.0 shader unchanged)', () => {
+      outliner.attach(host)
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+      expect(definesOf(outlineMesh)).toEqual([])
+      expect(readPhaseAt(outlineMesh, 0)).toBeUndefined()
+    })
+
+    it('each effect compiles in via its own define', () => {
+      outliner.attach(host, {
+        pulse: { speed: 2, amplitude: 0.5 },
+        colorCycle: { period: 4 },
+        edgeFlow: { axis: 'y', speed: 1, width: 0.15 },
+      })
+      const defines = definesOf(host.metadata.outlineMesh)
+      expect(defines).toContain('#define OUTLINE_HAS_EFFECTS')
+      expect(defines).toContain('#define OUTLINE_PULSE')
+      expect(defines).toContain('#define OUTLINE_COLOR_CYCLE')
+      expect(defines).toContain('#define OUTLINE_EDGE_FLOW')
+      expect(defines).toContain('#define FLOW_AXIS 1')
+    })
+
+    it('any effect allocates the per-instance phase buffer, defaulted to 0', () => {
+      outliner.attach(host, { pulse: { speed: 2, amplitude: 0.5 } })
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+      for (let i = 0; i < HOST_INSTANCE_COUNT; i++) {
+        expect(readPhaseAt(outlineMesh, i)).toBe(0)
+      }
+    })
+
+    it('highlight with phase writes only the targeted slot', () => {
+      outliner.attach(host, { pulse: { speed: 2, amplitude: 0.5 } })
+      outliner.highlight(host, 2, { phase: 0.7 })
+      const outlineMesh: Mesh = host.metadata.outlineMesh
+      expect(readPhaseAt(outlineMesh, 2)).toBeCloseTo(0.7, 6)
+      expect(readPhaseAt(outlineMesh, 0)).toBe(0)
+    })
+
+    it('phase is silently ignored when the host has no effects', () => {
+      outliner.attach(host)
+      expect(() => outliner.highlight(host, 2, { phase: 0.7 })).not.toThrow()
+      expect(outliner.isHighlighted(host, 2)).toBe(true)
+    })
+
+    it('edgeFlow measures the geometry extent along the flow axis', () => {
+      // Unit cube spans [-0.5, 0.5] on every axis → flowMin -0.5, invLength 1.
+      outliner.attach(host, { edgeFlow: { axis: 'y', speed: 1, width: 0.15 } })
+      const material = (host.metadata.outlineMesh as Mesh).material as unknown as {
+        _floats: Record<string, number>
+      }
+      expect(material._floats.flowMin).toBeCloseTo(-0.5, 6)
+      expect(material._floats.flowInvLength).toBeCloseTo(1, 6)
+    })
+  })
+
   describe('smoothNormals', () => {
     /** Snapshot a normal vector at vertex `i` from a vertices-data array. */
     const normalAt = (data: ArrayLike<number>, i: number) => [

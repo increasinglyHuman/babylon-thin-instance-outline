@@ -15,8 +15,47 @@
 import { Color3, Mesh, Scene, ShaderMaterial, VertexBuffer } from '@babylonjs/core'
 import type { Nullable, Observer } from '@babylonjs/core'
 import { ZERO_SCALE_MATRIX, fillBufferWithZeroScale } from './matrixHelpers'
-import { OUTLINE_COLOR_ATTRIBUTE, OUTLINE_SHADER_PATH, registerOutlineShader } from './outlineShader'
+import {
+  OUTLINE_COLOR_ATTRIBUTE,
+  OUTLINE_PHASE_ATTRIBUTE,
+  OUTLINE_SHADER_PATH,
+  registerOutlineShader,
+} from './outlineShader'
 import { averageNormalsAtSharedPositions } from './smoothNormals'
+
+/** Pulse modulation: outline brightness oscillates on a sine (ADR-004 §3.1). */
+export interface PulseOptions {
+  /** Sine speed in radians per second. */
+  speed: number
+  /** Modulation depth in [0, 1]: 0 = no visible pulse, 1 = full off-to-bright. */
+  amplitude: number
+}
+
+/** Hue rotation around the color wheel over time (ADR-004 §3.2). The
+ * per-instance color defines the starting hue; saturation and lightness
+ * are preserved during rotation. */
+export interface ColorCycleOptions {
+  /** Seconds per full hue rotation. */
+  period: number
+}
+
+/**
+ * Axis-aligned flowing glow band (ADR-004 §3.3). Deliberately NOT
+ * silhouette-following — the band travels along an OBJECT-space axis
+ * ("energy along a sword's edge") and rotates with the host.
+ */
+export interface EdgeFlowOptions {
+  /** Object-space axis the band travels along. */
+  axis: 'x' | 'y' | 'z'
+  /** Bands per second. */
+  speed: number
+  /** Band half-width as a normalized [0..1] fraction of the axis extent. */
+  width: number
+  /** Additive band color. Default white. */
+  accentColor?: Color3
+  /** Band peak brightness multiplier. Default 1. */
+  boost?: number
+}
 
 /** Options for {@link ThinInstanceOutliner.attach}. All fields optional. */
 export interface AttachOptions {
@@ -41,6 +80,16 @@ export interface AttachOptions {
    * large meshes.
    */
   smoothNormals?: boolean
+  /**
+   * Animated effects (ADR-004 §2.5). Each enabled effect compiles its shader
+   * path in via a #define — omitted effects cost nothing. The effect SET is
+   * fixed at attach; changing it requires detach() → attach() (shader
+   * recompile). Composition order is deliberate: hue cycle, then additive
+   * flow band, then pulse as a master intensity over everything.
+   */
+  pulse?: PulseOptions
+  colorCycle?: ColorCycleOptions
+  edgeFlow?: EdgeFlowOptions
 }
 
 /**
@@ -56,6 +105,13 @@ export interface HighlightOptions {
   color?: Color3
   /** v1: ignored (thickness is per-host). Reserved for v2. */
   thickness?: number
+  /**
+   * Per-instance time offset for animated effects, in fraction-of-cycle units
+   * [0..1] (ADR-004 §2.4) — concurrent highlights with different phases animate
+   * out of lockstep. Ignored (silently) when the host was attached without any
+   * effects. Persists across clear/re-highlight like `color`.
+   */
+  phase?: number
 }
 
 interface AttachedHost {
@@ -73,6 +129,8 @@ interface AttachedHost {
   /** Per-frame driver: updates the `time` uniform for every host, and
    * additionally mirrors the world matrix for single-mesh hosts. */
   renderObserver: Nullable<Observer<Scene>>
+  /** True when a per-instance phase buffer exists (any effect enabled). */
+  hasPhaseBuffer: boolean
 }
 
 /** Write a Color3 + alpha=1 to the color buffer at the given instance slot. */
@@ -129,6 +187,10 @@ export class ThinInstanceOutliner {
     const color = options.color ?? DEFAULT_COLOR
     const groupOffset = options.renderingGroupOffset ?? DEFAULT_RENDERING_GROUP_OFFSET
     const smoothNormals = options.smoothNormals ?? true
+    const pulse = options.pulse ?? null
+    const colorCycle = options.colorCycle ?? null
+    const edgeFlow = options.edgeFlow ?? null
+    const hasEffects = !!(pulse || colorCycle || edgeFlow)
 
     // Build the outline mesh from scratch with its OWN geometry — never clone
     // the host. Mesh.clone shares the underlying Geometry (thin-instance
@@ -198,19 +260,65 @@ export class ThinInstanceOutliner {
 
     // Material: ShaderMaterial with FRONT-face culling (so only back faces render).
     // See ADR-002 §3.2 for why `cullBackFaces = false` means cull-front-faces.
+    // Effects compile in via #defines (ADR-004 §2.5) — the attribute/uniform
+    // lists must match, or Babylon binds attributes the shader never declared.
+    const attributes = ['position', 'normal', 'world0', 'world1', 'world2', 'world3', OUTLINE_COLOR_ATTRIBUTE]
+    const uniforms = ['viewProjection', 'thickness', 'time']
+    const defines: string[] = []
+    if (hasEffects) {
+      attributes.push(OUTLINE_PHASE_ATTRIBUTE)
+      defines.push('#define OUTLINE_HAS_EFFECTS')
+    }
+    if (pulse) {
+      defines.push('#define OUTLINE_PULSE')
+      uniforms.push('pulseSpeed', 'pulseAmplitude')
+    }
+    if (colorCycle) {
+      defines.push('#define OUTLINE_COLOR_CYCLE')
+      uniforms.push('cyclePeriod')
+    }
+    const flowAxisIndex = edgeFlow ? { x: 0, y: 1, z: 2 }[edgeFlow.axis] : 0
+    if (edgeFlow) {
+      defines.push('#define OUTLINE_EDGE_FLOW', `#define FLOW_AXIS ${flowAxisIndex}`)
+      uniforms.push('flowMin', 'flowInvLength', 'flowSpeed', 'flowWidth', 'flowAccentColor', 'flowBoost')
+    }
+
     const material = new ShaderMaterial(
       `${host.name}_outlineMat`,
       this.scene,
       OUTLINE_SHADER_PATH,
-      {
-        attributes: ['position', 'normal', 'world0', 'world1', 'world2', 'world3', OUTLINE_COLOR_ATTRIBUTE],
-        uniforms: ['viewProjection', 'thickness', 'time'],
-      },
+      { attributes, uniforms, defines },
     )
     material.backFaceCulling = true
     material.cullBackFaces = false
     material.setFloat('thickness', thickness)
     material.setFloat('time', 0)
+    if (pulse) {
+      material.setFloat('pulseSpeed', pulse.speed)
+      material.setFloat('pulseAmplitude', pulse.amplitude)
+    }
+    if (colorCycle) {
+      material.setFloat('cyclePeriod', colorCycle.period)
+    }
+    if (edgeFlow) {
+      // The band coordinate must be normalized [0..1] along the flow axis
+      // regardless of mesh size or centering — measure the geometry extent
+      // from the copied positions (stride 3).
+      let axisMin = Infinity
+      let axisMax = -Infinity
+      for (let i = flowAxisIndex; i < positions.length; i += 3) {
+        const v = positions[i]
+        if (v < axisMin) axisMin = v
+        if (v > axisMax) axisMax = v
+      }
+      const axisLength = axisMax - axisMin
+      material.setFloat('flowMin', axisMin)
+      material.setFloat('flowInvLength', axisLength > 1e-6 ? 1 / axisLength : 0)
+      material.setFloat('flowSpeed', edgeFlow.speed)
+      material.setFloat('flowWidth', edgeFlow.width)
+      material.setColor3('flowAccentColor', edgeFlow.accentColor ?? new Color3(1, 1, 1))
+      material.setFloat('flowBoost', edgeFlow.boost ?? 1)
+    }
     outlineMesh.material = material
 
     // Allocate independent matrix buffer, all zero-scale (nothing visible yet).
@@ -225,6 +333,12 @@ export class ThinInstanceOutliner {
     const colorBuffer = new Float32Array(count * 4)
     for (let i = 0; i < count; i++) writeColorAt(colorBuffer, i, color)
     outlineMesh.thinInstanceSetBuffer(OUTLINE_COLOR_ATTRIBUTE, colorBuffer, 4, false)
+
+    // Per-instance phase (stride 1), only when an effect consumes it. All slots
+    // start at 0 (lockstep) until highlight(..., { phase }) overrides — ADR-004 §2.4.
+    if (hasEffects) {
+      outlineMesh.thinInstanceSetBuffer(OUTLINE_PHASE_ATTRIBUTE, new Float32Array(count), 1, false)
+    }
 
     // Render order: outline before host so host's front faces occlude outline's front.
     const targetGroup = host.renderingGroupId + groupOffset
@@ -264,6 +378,7 @@ export class ThinInstanceOutliner {
       slotCount: count,
       isSingleMesh,
       renderObserver: null,
+      hasPhaseBuffer: hasEffects,
     }
 
     // Per-frame driver, one observer per attached host (ADR-004 §2.3 / §2.2):
@@ -317,6 +432,14 @@ export class ThinInstanceOutliner {
         OUTLINE_COLOR_ATTRIBUTE,
         instanceIndex,
         [c.r, c.g, c.b, 1],
+        true,
+      )
+    }
+    if (options?.phase !== undefined && state.hasPhaseBuffer) {
+      state.outlineMesh.thinInstanceSetAttributeAt(
+        OUTLINE_PHASE_ATTRIBUTE,
+        instanceIndex,
+        [options.phase],
         true,
       )
     }

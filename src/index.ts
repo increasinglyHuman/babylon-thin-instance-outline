@@ -5,4 +5,10 @@
  */
 
 export { ThinInstanceOutliner } from './ThinInstanceOutliner'
-export type { AttachOptions, HighlightOptions } from './ThinInstanceOutliner'
+export type {
+  AttachOptions,
+  ColorCycleOptions,
+  EdgeFlowOptions,
+  HighlightOptions,
+  PulseOptions,
+} from './ThinInstanceOutliner'
