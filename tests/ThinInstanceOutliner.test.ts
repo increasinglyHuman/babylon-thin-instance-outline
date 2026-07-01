@@ -479,10 +479,14 @@ describe('ThinInstanceOutliner', () => {
       expect(scene.onBeforeRenderObservable.hasObservers()).toBe(false)
     })
 
-    it('thin-instance hosts do not register a render observer', () => {
+    it('every attached host registers a render observer (time driver — ADR-004 §2.3)', () => {
+      // v1.0.1 registered observers only for single-mesh hosts (matrix mirror);
+      // since v1.0.2 thin-instance hosts get one too, driving the `time` uniform.
       const before = scene.onBeforeRenderObservable.observers.length
       outliner.attach(host) // the thin-instanced fixture
-      expect(scene.onBeforeRenderObservable.observers.length).toBe(before)
+      expect(scene.onBeforeRenderObservable.observers.length).toBe(before + 1)
+      outliner.detach(host)
+      expect(scene.onBeforeRenderObservable.hasObservers()).toBe(false)
     })
 
     it('bounds-checks against the single slot (index 1 is a silent no-op)', () => {

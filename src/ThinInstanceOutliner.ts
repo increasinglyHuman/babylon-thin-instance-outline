@@ -70,8 +70,8 @@ interface AttachedHost {
   /** True when the host had no thin instances at attach — ADR-004 §2.2
    * single-mesh mode (internal 1-element thin instance, world-matrix mirror). */
   isSingleMesh: boolean
-  /** Per-frame world-matrix mirror for single-mesh hosts; null for
-   * thin-instance hosts (their matrices are consumer-driven via refresh()). */
+  /** Per-frame driver: updates the `time` uniform for every host, and
+   * additionally mirrors the world matrix for single-mesh hosts. */
   renderObserver: Nullable<Observer<Scene>>
 }
 
@@ -92,6 +92,10 @@ export class ThinInstanceOutliner {
   private readonly scene: Scene
   private readonly attached: Map<Mesh, AttachedHost> = new Map()
   private disposed = false
+  /** Outliner-global clock origin (ADR-004 §2.3): one shared `time` anchor for
+   * every attached host, so detach/re-attach (constant during linkset rebuilds)
+   * never resets effect phase — a per-host anchor would visibly pop. */
+  private readonly clockOrigin: number = performance.now()
 
   constructor(scene: Scene) {
     this.scene = scene
@@ -200,12 +204,13 @@ export class ThinInstanceOutliner {
       OUTLINE_SHADER_PATH,
       {
         attributes: ['position', 'normal', 'world0', 'world1', 'world2', 'world3', OUTLINE_COLOR_ATTRIBUTE],
-        uniforms: ['viewProjection', 'thickness'],
+        uniforms: ['viewProjection', 'thickness', 'time'],
       },
     )
     material.backFaceCulling = true
     material.cullBackFaces = false
     material.setFloat('thickness', thickness)
+    material.setFloat('time', 0)
     outlineMesh.material = material
 
     // Allocate independent matrix buffer, all zero-scale (nothing visible yet).
@@ -261,22 +266,24 @@ export class ThinInstanceOutliner {
       renderObserver: null,
     }
 
-    // Single-mesh hosts MOVE (a held weapon's world matrix changes every frame
-    // via bone parenting) — mirror the host's world matrix into the one instance
-    // slot each frame, but ONLY while highlighted: writing it unconditionally
-    // would resurrect a cleared (zero-scale) outline.
+    // Per-frame driver, one observer per attached host (ADR-004 §2.3 / §2.2):
+    //   1. Feed the `time` uniform from the outliner-global clock (all hosts —
+    //      animated effects consume it; without effects it's a cheap no-op set).
+    //   2. Single-mesh hosts MOVE (a held weapon's world matrix changes every
+    //      frame via bone parenting) — mirror the host's world matrix into the
+    //      one instance slot, but ONLY while highlighted: writing it
+    //      unconditionally would resurrect a cleared (zero-scale) outline.
     // computeWorldMatrix(true): the non-forced path early-returns the cached
     // matrix whenever the scene's renderId hasn't advanced since the last
     // compute — an OR with isSynchronized(), so vector dirtiness is never even
     // checked (transformNode.ts). That serves stale matrices for same-frame
     // moves and never-rendered scenes. Forced compose for ONE mesh is trivial.
-    // ADR-004 §2.2.
-    if (isSingleMesh) {
-      state.renderObserver = this.scene.onBeforeRenderObservable.add(() => {
-        if (!state.shownIndices.has(0)) return
+    state.renderObserver = this.scene.onBeforeRenderObservable.add(() => {
+      material.setFloat('time', (performance.now() - this.clockOrigin) / 1000)
+      if (state.isSingleMesh && state.shownIndices.has(0)) {
         state.outlineMesh.thinInstanceSetMatrixAt(0, host.computeWorldMatrix(true), true)
-      })
-    }
+      }
+    })
 
     this.attached.set(host, state)
   }

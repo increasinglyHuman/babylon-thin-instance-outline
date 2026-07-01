@@ -64,6 +64,11 @@ precision highp float;
 
 varying vec4 vOutlineColor;
 
+// Elapsed seconds from the outliner-global clock (ADR-004 §2.3). Declared
+// unconditionally so the uniform contract is stable; without effect defines
+// it's unused and the compiler strips it (setFloat degrades to a no-op).
+uniform float time;
+
 void main() {
     gl_FragColor = vOutlineColor;
 }
