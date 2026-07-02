@@ -94,13 +94,14 @@ knotMaterial.diffuseColor = new Color3(0.75, 0.55, 0.35)
 knotMaterial.specularColor = new Color3(0.2, 0.18, 0.12)
 knot.material = knotMaterial
 
-// Knot effects: colorCycle rotates the outline hue continuously; pulse breathes
-// it. Both driven by the outliner-global clock — zero per-frame consumer code.
+// Knot effects: colorCycle rotates the outline hue; rimFlow orbits a hot-spot
+// around the view-space silhouette (ADR-005) — the knot's concave topology
+// deliberately shows the multi-lobe limitation from ADR-005 §3.
 outliner.attach(knot, {
   color: new Color3(1.0, 0.45, 0.9),
   thickness: 0.06,
   colorCycle: { period: 5 },
-  pulse: { speed: 1.8, amplitude: 0.3 },
+  rimFlow: { speed: 0.35, width: 0.1, accentColor: new Color3(1, 1, 1), boost: 1.6 },
 })
 outliner.highlight(knot, 0)
 
@@ -154,6 +155,9 @@ ImportMeshAsync('./assets/greatsword.glb', scene)
       thickness: 0.02,
       pulse: { speed: 1.5, amplitude: 0.35 },
       edgeFlow: { axis, speed: 0.5, width: 0.08, accentColor: new Color3(0.8, 1.0, 1.0), boost: 2.0 },
+      // Electric crackle riding the blade's outline (ADR-004 §3.4) — flecks
+      // flicker along the rim; no silhouette detection needed.
+      sizzle: { scale: 4, speed: 2.5, threshold: 0.62, color: new Color3(1, 1, 0.85), boost: 2.5 },
     })
     outliner.highlight(sword, 0)
   })

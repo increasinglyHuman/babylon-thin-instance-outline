@@ -550,6 +550,65 @@ describe('ThinInstanceOutliner', () => {
       expect(outliner.isHighlighted(host, 2)).toBe(true)
     })
 
+    it('sizzle and rimFlow compile in via their defines with uniform defaults (ADR-004 §3.4 / ADR-005)', () => {
+      outliner.attach(host, {
+        sizzle: { scale: 6, speed: 1.5 },
+        rimFlow: { speed: 0.4, width: 0.12 },
+      })
+      const defines = definesOf(host.metadata.outlineMesh)
+      expect(defines).toContain('#define OUTLINE_SIZZLE')
+      expect(defines).toContain('#define OUTLINE_RIM_FLOW')
+      const material = (host.metadata.outlineMesh as Mesh).material as unknown as {
+        _floats: Record<string, number>
+      }
+      expect(material._floats.sizzleThreshold).toBeCloseTo(0.6, 6) // default
+      expect(material._floats.rimSpeed).toBeCloseTo(0.4, 6)
+    })
+
+    it('rimFlow computes the object-space bbox center as the rim centroid (ADR-005 §2.1)', () => {
+      // Unit cube is origin-centered → centroid (0,0,0). Assert against a
+      // translated-geometry host too, so the bbox math (not just origin luck)
+      // is what's locked in.
+      outliner.attach(host, { rimFlow: { speed: 0.4, width: 0.12 } })
+      const centered = (
+        (host.metadata.outlineMesh as Mesh).material as unknown as {
+          _vectors3: Record<string, { x: number; y: number; z: number }>
+        }
+      )._vectors3.geomCentroid
+      expect(centered.x).toBeCloseTo(0, 6)
+      expect(centered.y).toBeCloseTo(0, 6)
+      expect(centered.z).toBeCloseTo(0, 6)
+
+      const shifted = MeshBuilder.CreateBox('shifted', { size: 2 }, scene)
+      const pos = shifted.getVerticesData(VertexBuffer.PositionKind)!
+      const moved = Float32Array.from(pos)
+      for (let i = 0; i < moved.length; i += 3) moved[i] += 10 // shift +10 on X
+      shifted.setVerticesData(VertexBuffer.PositionKind, moved)
+      outliner.attach(shifted, { rimFlow: { speed: 0.4, width: 0.12 } })
+      const off = (
+        (shifted.metadata.outlineMesh as Mesh).material as unknown as {
+          _vectors3: Record<string, { x: number; y: number; z: number }>
+        }
+      )._vectors3.geomCentroid
+      expect(off.x).toBeCloseTo(10, 6)
+      expect(off.y).toBeCloseTo(0, 6)
+    })
+
+    it('setEffectParams live-tunes sizzle and rimFlow; ignores them when absent', () => {
+      outliner.attach(host, { sizzle: { scale: 6, speed: 1.5 } })
+      outliner.setEffectParams(host, {
+        sizzle: { threshold: 0.8, boost: 3 },
+        rimFlow: { speed: 9 }, // not attached with rimFlow — must not write
+      })
+      const material = (host.metadata.outlineMesh as Mesh).material as unknown as {
+        _floats: Record<string, number>
+      }
+      expect(material._floats.sizzleThreshold).toBeCloseTo(0.8, 6)
+      expect(material._floats.sizzleBoost).toBeCloseTo(3, 6)
+      expect(material._floats.sizzleScale).toBeCloseTo(6, 6) // preserved
+      expect(material._floats.rimSpeed).toBeUndefined()
+    })
+
     it('setEffectParams live-tunes uniform-backed params without recompile', () => {
       outliner.attach(host, {
         pulse: { speed: 2, amplitude: 0.5 },

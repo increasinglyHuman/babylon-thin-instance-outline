@@ -75,6 +75,20 @@ uniform float flowInvLength;
 varying float vFlowCoord;
 #endif
 
+#ifdef OUTLINE_SIZZLE
+varying vec3 vObjPos;
+#endif
+
+#ifdef OUTLINE_RIM_FLOW
+uniform mat4 view;
+uniform vec3 geomCentroid; // object-space bbox center, computed at attach
+// Direction from instance centroid to vertex in VIEW space (ADR-005 §2.1).
+// A vec2 direction, NOT the angle: an angle varying has a hard seam at ±π
+// where interpolation breaks; the direction interpolates smoothly and the
+// fragment shader runs atan per-pixel.
+varying vec2 vRimDir;
+#endif
+
 void main() {
     mat4 finalWorld = mat4(world0, world1, world2, world3);
     // Push the vertex outward along its normal in object space, then transform.
@@ -89,6 +103,14 @@ void main() {
 #ifdef OUTLINE_EDGE_FLOW
     // FLOW_AXIS is a define (0/1/2) — constant vector index, valid in GLSL ES.
     vFlowCoord = (position[FLOW_AXIS] - flowMin) * flowInvLength;
+#endif
+#ifdef OUTLINE_SIZZLE
+    vObjPos = position; // pre-displacement object space: view-stable noise domain
+#endif
+#ifdef OUTLINE_RIM_FLOW
+    vec4 viewVert = view * finalWorld * vec4(displaced, 1.0);
+    vec4 viewCentroid = view * finalWorld * vec4(geomCentroid, 1.0);
+    vRimDir = viewVert.xy - viewCentroid.xy;
 #endif
 }
 `
@@ -162,6 +184,42 @@ uniform vec3 flowAccentColor; // additive band color
 uniform float flowBoost;      // band peak brightness multiplier
 #endif
 
+#ifdef OUTLINE_RIM_FLOW
+varying vec2 vRimDir;
+uniform float rimSpeed;      // orbits per second (negative reverses)
+uniform float rimWidth;      // hot-spot width, fraction [0..1] of the rim
+uniform vec3 rimAccentColor; // additive hot-spot color
+uniform float rimBoost;      // hot-spot peak brightness
+#endif
+
+#ifdef OUTLINE_SIZZLE
+varying vec3 vObjPos;
+uniform float sizzleScale;     // noise feature density, object-space units
+uniform float sizzleSpeed;     // flicker speed
+uniform float sizzleThreshold; // fleck coverage: higher = sparser
+uniform vec3 sizzleColor;      // additive fleck color
+uniform float sizzleBoost;     // fleck brightness
+
+// Hash-based value noise — pure GLSL, no textures (zero-dep rule, ADR-004 §3.4).
+float sizzleHash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float sizzleNoise(vec3 x) {
+    vec3 i = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(
+        mix(mix(sizzleHash(i),                   sizzleHash(i + vec3(1, 0, 0)), f.x),
+            mix(sizzleHash(i + vec3(0, 1, 0)),   sizzleHash(i + vec3(1, 1, 0)), f.x), f.y),
+        mix(mix(sizzleHash(i + vec3(0, 0, 1)),   sizzleHash(i + vec3(1, 0, 1)), f.x),
+            mix(sizzleHash(i + vec3(0, 1, 1)),   sizzleHash(i + vec3(1, 1, 1)), f.x), f.y),
+        f.z);
+}
+#endif
+
 void main() {
     vec4 base = vOutlineColor;
 
@@ -171,8 +229,9 @@ void main() {
     float t = time + vPhase * 6.28318530718;
 #endif
 
-    // Effect order is deliberate (ADR-004 §2.5): cycle hue, add flow band,
-    // THEN multiply pulse — pulse acts as a master intensity over everything.
+    // Effect order is deliberate (ADR-004 §2.5, extended by ADR-005 §2.3):
+    // cycle hue, then additive layers broad-to-fine (flow band → rim hot-spot
+    // → sizzle flecks), THEN multiply pulse — the master intensity over all.
 #ifdef OUTLINE_COLOR_CYCLE
     vec3 hsl = rgb2hsl(base.rgb);
     hsl.x = fract(hsl.x + t / cyclePeriod);
@@ -186,6 +245,27 @@ void main() {
     // in GLSL. The complement form is equivalent and well-defined.
     float bandIntensity = 1.0 - smoothstep(0.0, flowWidth, bandDist);
     base.rgb += flowBoost * bandIntensity * flowAccentColor;
+#endif
+
+#ifdef OUTLINE_RIM_FLOW
+    // Centroid-angle silhouette coordinate (ADR-005 §2.1): the fragment's
+    // angle around the instance centroid in view space, mapped to cyclic [0,1).
+    float rimAngle = atan(vRimDir.y, vRimDir.x);   // [-PI, PI]
+    float rimU = rimAngle * 0.15915494309 + 0.5;   // (1/TAU) → [0, 1)
+    float rimHs = fract(rimU - t * rimSpeed);
+    float rimDist = abs(rimHs - 0.5);              // cyclic distance to hot-spot
+    float rimIntensity = 1.0 - smoothstep(0.0, rimWidth, rimDist);
+    base.rgb += rimBoost * rimIntensity * rimAccentColor;
+#endif
+
+#ifdef OUTLINE_SIZZLE
+    // Two octaves, animated in object space (view-stable), thresholded to
+    // flecks. Every visible fragment IS the silhouette (inverted-hull property,
+    // ADR-004 §3.4) — no edge detection needed.
+    float sn = 0.65 * sizzleNoise(vObjPos * sizzleScale + vec3(0.0, t * sizzleSpeed, t * sizzleSpeed * 0.7))
+             + 0.35 * sizzleNoise(vObjPos * sizzleScale * 2.7 + vec3(t * sizzleSpeed * 1.3, 0.0, 0.0));
+    float flecks = smoothstep(sizzleThreshold, 1.0, sn);
+    base.rgb += sizzleBoost * flecks * sizzleColor;
 #endif
 
 #ifdef OUTLINE_PULSE

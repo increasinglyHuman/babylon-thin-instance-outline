@@ -12,4 +12,6 @@ export type {
   EffectParamUpdates,
   HighlightOptions,
   PulseOptions,
+  RimFlowOptions,
+  SizzleOptions,
 } from './ThinInstanceOutliner'

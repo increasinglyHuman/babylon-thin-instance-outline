@@ -12,7 +12,7 @@
  * matrix buffers that we mutate per-instance.
  */
 
-import { Color3, Mesh, Scene, ShaderMaterial, VertexBuffer } from '@babylonjs/core'
+import { Color3, Mesh, Scene, ShaderMaterial, Vector3, VertexBuffer } from '@babylonjs/core'
 import type { Nullable, Observer } from '@babylonjs/core'
 import { ZERO_SCALE_MATRIX, fillBufferWithZeroScale } from './matrixHelpers'
 import {
@@ -58,6 +58,41 @@ export interface EdgeFlowOptions {
 }
 
 /**
+ * Traveling hot-spot that orbits the VISIBLE silhouette (ADR-005). Uses the
+ * centroid-angle view-space coordinate — correct per instance, seamless wrap.
+ * Reads best on convex-ish shapes; concave topology lights multiple lobes at
+ * the same angle (documented limitation, ADR-005 §3).
+ */
+export interface RimFlowOptions {
+  /** Orbits per second around the rim. Negative reverses direction. */
+  speed: number
+  /** Hot-spot width as a fraction [0..1] of the rim circumference. */
+  width: number
+  /** Additive hot-spot color. Default white. */
+  accentColor?: Color3
+  /** Hot-spot peak brightness multiplier. Default 1. */
+  boost?: number
+}
+
+/**
+ * Electric crackle along the outline (ADR-004 §3.4). Animated object-space
+ * value noise thresholded to flecks — view-stable, and needs no silhouette
+ * detection: every visible outline fragment IS the rim (inverted-hull property).
+ */
+export interface SizzleOptions {
+  /** Noise feature density in object-space units (bigger = finer flecks). */
+  scale: number
+  /** Flicker speed. */
+  speed: number
+  /** Fleck coverage threshold [0..1): higher = sparser flecks. Default 0.6. */
+  threshold?: number
+  /** Additive fleck color. Default white. */
+  color?: Color3
+  /** Fleck brightness multiplier. Default 1. */
+  boost?: number
+}
+
+/**
  * Live-tunable parameter updates for {@link ThinInstanceOutliner.setEffectParams}.
  * Everything here is uniform-backed — updates apply on the next frame with no
  * shader recompile. What CANNOT change post-attach: the effect SET (which
@@ -73,6 +108,10 @@ export interface EffectParamUpdates {
   colorCycle?: Partial<ColorCycleOptions>
   /** Ignored unless the host was attached WITH edgeFlow. `axis` is fixed. */
   edgeFlow?: Partial<Omit<EdgeFlowOptions, 'axis'>>
+  /** Ignored unless the host was attached WITH rimFlow. */
+  rimFlow?: Partial<RimFlowOptions>
+  /** Ignored unless the host was attached WITH sizzle. */
+  sizzle?: Partial<SizzleOptions>
 }
 
 /** Options for {@link ThinInstanceOutliner.attach}. All fields optional. */
@@ -108,6 +147,8 @@ export interface AttachOptions {
   pulse?: PulseOptions
   colorCycle?: ColorCycleOptions
   edgeFlow?: EdgeFlowOptions
+  rimFlow?: RimFlowOptions
+  sizzle?: SizzleOptions
 }
 
 /**
@@ -151,7 +192,7 @@ interface AttachedHost {
   hasPhaseBuffer: boolean
   /** Which effects were compiled in at attach — setEffectParams() only touches
    * uniforms that exist in the compiled shader. */
-  effects: { pulse: boolean; colorCycle: boolean; edgeFlow: boolean }
+  effects: { pulse: boolean; colorCycle: boolean; edgeFlow: boolean; rimFlow: boolean; sizzle: boolean }
 }
 
 /** Write a Color3 + alpha=1 to the color buffer at the given instance slot. */
@@ -211,7 +252,9 @@ export class ThinInstanceOutliner {
     const pulse = options.pulse ?? null
     const colorCycle = options.colorCycle ?? null
     const edgeFlow = options.edgeFlow ?? null
-    const hasEffects = !!(pulse || colorCycle || edgeFlow)
+    const rimFlow = options.rimFlow ?? null
+    const sizzle = options.sizzle ?? null
+    const hasEffects = !!(pulse || colorCycle || edgeFlow || rimFlow || sizzle)
 
     // Build the outline mesh from scratch with its OWN geometry — never clone
     // the host. Mesh.clone shares the underlying Geometry (thin-instance
@@ -303,6 +346,15 @@ export class ThinInstanceOutliner {
       defines.push('#define OUTLINE_EDGE_FLOW', `#define FLOW_AXIS ${flowAxisIndex}`)
       uniforms.push('flowMin', 'flowInvLength', 'flowSpeed', 'flowWidth', 'flowAccentColor', 'flowBoost')
     }
+    if (rimFlow) {
+      defines.push('#define OUTLINE_RIM_FLOW')
+      // 'view' is a Babylon-recognized uniform name — auto-bound each frame.
+      uniforms.push('view', 'geomCentroid', 'rimSpeed', 'rimWidth', 'rimAccentColor', 'rimBoost')
+    }
+    if (sizzle) {
+      defines.push('#define OUTLINE_SIZZLE')
+      uniforms.push('sizzleScale', 'sizzleSpeed', 'sizzleThreshold', 'sizzleColor', 'sizzleBoost')
+    }
 
     const material = new ShaderMaterial(
       `${host.name}_outlineMat`,
@@ -339,6 +391,36 @@ export class ThinInstanceOutliner {
       material.setFloat('flowWidth', edgeFlow.width)
       material.setColor3('flowAccentColor', edgeFlow.accentColor ?? new Color3(1, 1, 1))
       material.setFloat('flowBoost', edgeFlow.boost ?? 1)
+    }
+    if (rimFlow) {
+      // Object-space bbox center = the centroid the rim angle wraps around
+      // (ADR-005 §2.1). Bbox over vertex-average: robust to vertex density.
+      let minX = Infinity, minY = Infinity, minZ = Infinity
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
+      for (let i = 0; i < positions.length; i += 3) {
+        const x = positions[i], y = positions[i + 1], z = positions[i + 2]
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+        if (z < minZ) minZ = z
+        if (z > maxZ) maxZ = z
+      }
+      material.setVector3(
+        'geomCentroid',
+        new Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2),
+      )
+      material.setFloat('rimSpeed', rimFlow.speed)
+      material.setFloat('rimWidth', rimFlow.width)
+      material.setColor3('rimAccentColor', rimFlow.accentColor ?? new Color3(1, 1, 1))
+      material.setFloat('rimBoost', rimFlow.boost ?? 1)
+    }
+    if (sizzle) {
+      material.setFloat('sizzleScale', sizzle.scale)
+      material.setFloat('sizzleSpeed', sizzle.speed)
+      material.setFloat('sizzleThreshold', sizzle.threshold ?? 0.6)
+      material.setColor3('sizzleColor', sizzle.color ?? new Color3(1, 1, 1))
+      material.setFloat('sizzleBoost', sizzle.boost ?? 1)
     }
     outlineMesh.material = material
 
@@ -400,7 +482,13 @@ export class ThinInstanceOutliner {
       isSingleMesh,
       renderObserver: null,
       hasPhaseBuffer: hasEffects,
-      effects: { pulse: !!pulse, colorCycle: !!colorCycle, edgeFlow: !!edgeFlow },
+      effects: {
+        pulse: !!pulse,
+        colorCycle: !!colorCycle,
+        edgeFlow: !!edgeFlow,
+        rimFlow: !!rimFlow,
+        sizzle: !!sizzle,
+      },
     }
 
     // Per-frame driver, one observer per attached host (ADR-004 §2.3 / §2.2):
@@ -554,6 +642,21 @@ export class ThinInstanceOutliner {
       if (f.width !== undefined) m.setFloat('flowWidth', f.width)
       if (f.accentColor) m.setColor3('flowAccentColor', f.accentColor)
       if (f.boost !== undefined) m.setFloat('flowBoost', f.boost)
+    }
+    if (updates.rimFlow && state.effects.rimFlow) {
+      const r = updates.rimFlow
+      if (r.speed !== undefined) m.setFloat('rimSpeed', r.speed)
+      if (r.width !== undefined) m.setFloat('rimWidth', r.width)
+      if (r.accentColor) m.setColor3('rimAccentColor', r.accentColor)
+      if (r.boost !== undefined) m.setFloat('rimBoost', r.boost)
+    }
+    if (updates.sizzle && state.effects.sizzle) {
+      const s = updates.sizzle
+      if (s.scale !== undefined) m.setFloat('sizzleScale', s.scale)
+      if (s.speed !== undefined) m.setFloat('sizzleSpeed', s.speed)
+      if (s.threshold !== undefined) m.setFloat('sizzleThreshold', s.threshold)
+      if (s.color) m.setColor3('sizzleColor', s.color)
+      if (s.boost !== undefined) m.setFloat('sizzleBoost', s.boost)
     }
   }
 

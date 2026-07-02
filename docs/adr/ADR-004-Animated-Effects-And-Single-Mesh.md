@@ -163,6 +163,27 @@ outliner.attach(mesh, {
 - Highly concave geometry (e.g. a torus knot, a hollow ring) produces a band that "jumps" around the topology. Demo will show this.
 - For radially-symmetric shapes where you actually want the band to sweep around the silhouette, this approach won't deliver. That's a v1.2 candidate (centroid-angle approximation per §2.3 of the v1.1 design exploration).
 
+### 3.4 Sizzle (added 2026-07-01, post-ratification amendment — v1.2)
+
+**Visual:** electric crackle — bright flecks flickering along the visible outline. Magic-weapon energy, corruption auras, "charging" states.
+
+**The insight that makes this cheap:** the inverted hull's visible fragments ARE the silhouette by construction (only the rim survives the host's occlusion). So a "sizzle along the edge" needs no silhouette detection at all — it's per-fragment animated noise, and the technique guarantees it only ever appears on the edge.
+
+**Math:** two octaves of hash-based value noise (pure GLSL, no textures — zero-dep rule holds), sampled in OBJECT space so the pattern is completely view-stable (no swimming under camera motion), thresholded to flecks:
+
+```glsl
+float n = 0.65 * noise3(obj_pos * scale + t * speed_vec)
+        + 0.35 * noise3(obj_pos * scale * 2.7 + t * speed_vec2);
+float flecks = smoothstep(threshold, 1.0, n);
+base.rgb += boost * flecks * sizzle_color;
+```
+
+**API:** `attach(mesh, { sizzle: { scale, speed, threshold?, color?, boost? } })`. All uniform-backed → live-tunable via `setEffectParams`. Phase applies as with every effect.
+
+**Composition order (extends §2.5):** sizzle is additive and applies after edgeFlow, before pulse — pulse remains the master dimmer over everything, sizzle flecks included.
+
+**Explicitly NOT this effect:** a hot-spot that *travels around* the rim (orbiting comet). That requires the centroid-angle silhouette coordinate parked in §3.3/§7 — a genuinely new design decision (view-space math, concave-topology instability) that gets its own ADR if wanted.
+
 ## 4. API surface (v1.1 additions)
 
 The v1.0 surface is unchanged. v1.1 extends `AttachOptions` and `HighlightOptions`:
