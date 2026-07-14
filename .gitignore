@@ -13,3 +13,6 @@ demo-*.png
 .env
 .env.local
 coverage/
+
+# Local-only infra doc — exposes deploy topology / home IP / SSH key path. Never commit.
+DEPLOY.md

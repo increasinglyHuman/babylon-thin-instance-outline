@@ -2,8 +2,8 @@
 
 Per-instance outline rendering for Babylon.js thin-instances — using the classic inverted-hull technique. The outline lives on a sibling thin-instance host whose matrix buffer mirrors the source's, with per-instance show/hide via matrix scale.
 
-**Status:** v0 scaffold (not yet published; in-flight implementation).
-**Author:** Allen Partridge ([@increasinglyHuman](https://github.com/increasinglyHuman)) + Claude.
+**Status:** v1.3.0 — stable public API for single-mesh static thin-instances, with per-instance color, smooth-normals preprocessing, and animated silhouette effects.
+**Author:** Allen Partridge ([@increasinglyHuman](https://github.com/increasinglyHuman)) + Claude. Part of the [BlackBox creative suite](https://poqpoq.com).
 **License:** [MIT](LICENSE).
 
 ---
@@ -41,11 +41,11 @@ This technique is well-known in 3D rendering — Pixar's RenderMan, every modern
 ## Quick start
 
 ```bash
-npm install @p0qp0q/babylon-thin-instance-outline
+npm install @poqpoq/babylon-thin-instance-outline
 ```
 
 ```ts
-import { ThinInstanceOutliner } from '@p0qp0q/babylon-thin-instance-outline'
+import { ThinInstanceOutliner } from '@poqpoq/babylon-thin-instance-outline'
 import { Color3 } from '@babylonjs/core'
 
 const outliner = new ThinInstanceOutliner(scene)
@@ -92,13 +92,9 @@ This library renders a per-instance silhouette outline. Mental model:
 
 ## Status & roadmap
 
-**v0 (current):** scaffold + ADRs + design.
+**Shipped (v1.0 → v1.3):** core inverted-hull outline for single-mesh static thin-instances · **per-instance color** (`highlight(host, idx, { color })`) · **smooth-normals preprocess** for hard-edge meshes (default on) · **animated silhouette effects** — pulse, colorCycle, edgeFlow, sizzle, rimFlow · **live param tuning** via `setEffectParams` (no recompile).
 
-**v1:** core inverted-hull outline. Single-mesh-per-host case. Static thin-instances (no mid-edit growth). **Per-instance color** via `highlight(host, idx, { color })`. **Smooth-normals preprocess** for hard-edge meshes (default on).
-
-**v2:** multi-mesh hosts (skeleton-shared), animated mesh outline (skeleton-clone), per-instance thickness, animated edge effects (pulse / sweep / rolling glow for magic-weapon-style highlights).
-
-**v3:** publish to npm, mention to Babylon community.
+**Next:** multi-mesh hosts (skeleton-shared) · animated mesh outline (skeleton-clone) · per-instance thickness.
 
 ## Born from
 
@@ -108,4 +104,6 @@ If your project hits the same Babylon gap, this library is for you. Issues and P
 
 ## License
 
-[MIT](LICENSE). Use freely, attribute kindly.
+[MIT](LICENSE) © [Allen Partridge (p0qp0q)](https://poqpoq.com). Use freely, attribute kindly.
+
+Part of the [BlackBox creative suite](https://poqpoq.com) — see also [Animator](https://poqpoq.com/animator/), [Skinner](https://poqpoq.com/skinner/), and [`@poqpoq/voxel-skinner`](https://www.npmjs.com/package/@poqpoq/voxel-skinner).

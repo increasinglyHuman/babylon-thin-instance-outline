@@ -1,5 +1,5 @@
 /**
- * index.ts — public API barrel for @p0qp0q/babylon-thin-instance-outline.
+ * index.ts — public API barrel for @poqpoq/babylon-thin-instance-outline.
  * What's exported here IS the v1 contract per ADR-003 §4. Anything not exported
  * here is internal and subject to change without a major version bump.
  */

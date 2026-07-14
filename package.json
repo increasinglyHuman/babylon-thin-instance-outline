@@ -1,6 +1,6 @@
 {
-  "name": "@p0qp0q/babylon-thin-instance-outline",
-  "version": "0.0.1",
+  "name": "@poqpoq/babylon-thin-instance-outline",
+  "version": "1.3.0",
   "description": "Per-instance outline rendering for Babylon.js thin-instances using the inverted-hull technique.",
   "type": "module",
   "main": "dist/index.js",
