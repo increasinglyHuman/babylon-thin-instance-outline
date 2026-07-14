@@ -12,6 +12,8 @@ import { resolve } from 'node:path'
 const projectRoot = __dirname
 
 export default defineConfig({
+  // Relative base so the built demo works under any subpath (e.g. poqpoq.com/babylon-outline/)
+  base: './',
   root: resolve(projectRoot, 'demo'),
   server: {
     fs: {

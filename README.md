@@ -2,7 +2,8 @@
 
 Per-instance outline rendering for Babylon.js thin-instances — using the classic inverted-hull technique. The outline lives on a sibling thin-instance host whose matrix buffer mirrors the source's, with per-instance show/hide via matrix scale.
 
-**Status:** v1.3.0 — stable public API for single-mesh static thin-instances, with per-instance color, smooth-normals preprocessing, and animated silhouette effects.
+**🎮 Live demo:** https://poqpoq.com/babylon-outline/ — click a cube, the orbiting torus knot, or the greatsword.
+**Status:** v1.3.1 — stable public API for single-mesh static thin-instances, with per-instance color, smooth-normals preprocessing, and animated silhouette effects.
 **Author:** Allen Partridge ([@increasinglyHuman](https://github.com/increasinglyHuman)) + Claude. Part of the [BlackBox creative suite](https://poqpoq.com).
 **License:** [MIT](LICENSE).
 
