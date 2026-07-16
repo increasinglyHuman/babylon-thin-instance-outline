@@ -333,7 +333,16 @@ export class ThinInstanceOutliner {
     // See ADR-002 §3.2 for why `cullBackFaces = false` means cull-front-faces.
     // Effects compile in via #defines (ADR-004 §2.5) — the attribute/uniform
     // lists must match, or Babylon binds attributes the shader never declared.
-    const attributes = ['position', 'normal', 'world0', 'world1', 'world2', 'world3', OUTLINE_COLOR_ATTRIBUTE]
+    // NOTE: world0..world3 are deliberately ABSENT here (#15). ShaderMaterial appends
+    // our `options.attributes` verbatim and THEN calls PushAttributesForInstances(),
+    // which adds world0..3 itself whenever the mesh uses instances — always true for
+    // the outline mesh, which is a thin-instance host by construction. Listing them
+    // ourselves duplicated them, so world0 resolved to shader location 2 twice.
+    // WebGL binds by name and shrugs; WebGPU validates the vertex state and rejects
+    // the whole pipeline ("Attribute shader location (2) is used more than once"),
+    // taking the entire scene down with it. The GLSL still declares world0..3 — that
+    // is what assigns the locations; only the duplicate registration is removed.
+    const attributes = ['position', 'normal', OUTLINE_COLOR_ATTRIBUTE]
     const uniforms = ['viewProjection', 'thickness', 'time']
     const defines: string[] = []
     if (hasEffects) {
