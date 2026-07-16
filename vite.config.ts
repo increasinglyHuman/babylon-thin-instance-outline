@@ -25,5 +25,9 @@ export default defineConfig({
   build: {
     outDir: resolve(projectRoot, 'demo-dist'),
     emptyOutDir: true,
+    // es2022 for top-level await: demo.ts awaits WebGPUEngine.initAsync() when
+    // launched with `?webgpu`. Vite's default target (es2020) rejects TLA. Demo-only
+    // — the library itself ships via tsc and sets its target in tsconfig.json.
+    target: 'es2022',
   },
 })

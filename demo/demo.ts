@@ -25,13 +25,29 @@ import {
   Scene,
   StandardMaterial,
   Vector3,
+  WebGPUEngine,
 } from '@babylonjs/core'
 import '@babylonjs/loaders/glTF' // registers the .glb loader (side effect)
 import { ThinInstanceOutliner } from '../src'
 
 const canvas = document.getElementById('render') as HTMLCanvasElement
 
-const engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true })
+// --- Engine: WebGL by default, `?webgpu` for the WebGPU backend.
+// Not a toy switch. The two backends bind thin-instance vertex buffers
+// differently, and issue #3 (attach() blanking the host's own instances)
+// reproduced ONLY on WebGPU, only with imported-GLB hosts. Being able to flip
+// backends from the URL is what makes that whole bug class demo-verifiable —
+// it is the check ADR-006 §2.3 leans on when deleting the WebGPU re-bind guard.
+const useWebGPU = new URLSearchParams(location.search).has('webgpu')
+let engine: Engine | WebGPUEngine
+if (useWebGPU) {
+  const gpu = new WebGPUEngine(canvas, { stencil: true })
+  await gpu.initAsync() // top-level await: demo is an ESM module
+  engine = gpu
+} else {
+  engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true })
+}
+
 const scene = new Scene(engine)
 scene.clearColor = new Color4(0.05, 0.07, 0.1, 1)
 

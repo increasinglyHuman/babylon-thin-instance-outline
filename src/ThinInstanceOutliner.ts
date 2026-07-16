@@ -12,8 +12,9 @@
  * matrix buffers that we mutate per-instance.
  */
 
-import { Color3, Mesh, Scene, ShaderMaterial, Vector3, VertexBuffer } from '@babylonjs/core'
+import { Color3, Logger, Mesh, Scene, ShaderMaterial, Vector3, VertexBuffer } from '@babylonjs/core'
 import type { Nullable, Observer } from '@babylonjs/core'
+import { copyHostMatrixInto, hasDirectMatrixAccess } from './hostMatrixSource'
 import { ZERO_SCALE_MATRIX, fillBufferWithZeroScale } from './matrixHelpers'
 import {
   OUTLINE_COLOR_ATTRIBUTE,
@@ -176,6 +177,12 @@ export interface HighlightOptions {
 interface AttachedHost {
   outlineMesh: Mesh
   material: ShaderMaterial
+  /** The outline mesh's matrix buffer — allocated and owned by us, so writing raw
+   * floats into it is our own business, not a reach into Babylon. Bypasses
+   * `thinInstanceSetMatrixAt`, which would store a Matrix by reference into the
+   * outline's own worldMatrices cache and re-introduce the aliasing hazard
+   * ADR-006 exists to remove. Never grown in place — see `slotCount`. */
+  outlineMatrices: Float32Array
   shownIndices: Set<number>
   /** Outline buffer capacity, frozen at attach time. Bounds-checks use THIS,
    * not the host's live thinInstanceCount — a host that grows after attach
@@ -453,30 +460,36 @@ export class ThinInstanceOutliner {
     if (!outlineMesh.metadata) outlineMesh.metadata = {}
     outlineMesh.metadata.isOutlineFor = host.uniqueId
 
-    // Belt-and-suspenders guard for the WebGPU blanking regression: re-setting
-    // the host's matrix buffer with the SAME backing array (consumer-held
-    // references stay valid) forces Babylon to rebuild the host's world0..3
-    // bindings if anything above disturbed them. With the fresh-geometry build
-    // this should be a no-op, but the bug shipped once and the guard is cheap.
-    // Deliberate, guarded exception to the "no Babylon internals" rule
-    // (CLAUDE.md): there is no public getter for the raw matrix buffer, and
-    // re-setting a rebuilt copy would orphan the consumer's original array.
-    // If Babylon ever renames the field, this degrades to a no-op.
-    // Single-mesh hosts have no thin-instance state to guard — skipped.
-    if (!isSingleMesh) {
-      const hostStorage = (host as unknown as { _thinInstanceDataStorage?: { matrixData: Float32Array | null } })
-        ._thinInstanceDataStorage
-      if (hostStorage?.matrixData) {
-        host.thinInstanceSetBuffer('matrix', hostStorage.matrixData, 16, false)
-        // thinInstanceSetBuffer recomputes count from buffer capacity; restore the
-        // consumer's count in case they render fewer instances than the buffer holds.
-        host.thinInstanceCount = count
-      }
+    // NOTE: v1.3 re-set the host's matrix buffer here as a "belt-and-suspenders"
+    // guard against the WebGPU blanking regression (#3). It is gone as of ADR-006,
+    // and deleting it FIXED a bug rather than risking one:
+    //   - It never fixed #3. `git log -S"_thinInstanceDataStorage"` shows it was born
+    //     in bb80269 — the same commit as the real fix (build the outline from fresh
+    //     geometry, never clone the host). It was insurance that was never load-bearing.
+    //   - Nothing is left for it to repair. Every other host access in this method is
+    //     a read or a forced copy (`getVerticesData(kind, false, true)`), so the host's
+    //     buffers are never disturbed in the first place.
+    //   - It was not free. `thinInstanceSetBuffer(..., staticBuffer=false)` silently
+    //     flipped a STATIC host buffer (Babylon's default!) to updatable and disposed +
+    //     recreated the GPU buffer underneath the consumer — an unrequested mutation of
+    //     their state. Regression-tested in tests/matrixSourceOfTruth.test.ts.
+    // If #3 ever returns on WebGPU, the fresh-geometry build is the thing to examine.
+
+    // Warn once per host if ground truth is unreachable — the read path still works via
+    // Babylon's memoised public getter, but silently stops tracking direct buffer writes
+    // (ADR-006 §2.3). Loud beats a frozen outline nobody can explain.
+    if (!isSingleMesh && !hasDirectMatrixAccess(host)) {
+      Logger.Warn(
+        `[thin-instance-outline] Cannot read host "${host.name}" thin-instance matrices directly ` +
+          `(Babylon internal layout changed?). Falling back to thinInstanceGetWorldMatrices(), which ` +
+          `is memoised: outlines will NOT track instances moved by direct matrix-buffer writes. See ADR-006.`,
+      )
     }
 
     const state: AttachedHost = {
       outlineMesh,
       material,
+      outlineMatrices: matrixBuffer,
       shownIndices: new Set(),
       slotCount: count,
       isSingleMesh,
@@ -506,7 +519,8 @@ export class ThinInstanceOutliner {
     state.renderObserver = this.scene.onBeforeRenderObservable.add(() => {
       material.setFloat('time', (performance.now() - this.clockOrigin) / 1000)
       if (state.isSingleMesh && state.shownIndices.has(0)) {
-        state.outlineMesh.thinInstanceSetMatrixAt(0, host.computeWorldMatrix(true), true)
+        host.computeWorldMatrix(true).copyToArray(state.outlineMatrices, 0)
+        state.outlineMesh.thinInstanceBufferUpdated('matrix')
       }
     })
 
@@ -530,12 +544,15 @@ export class ThinInstanceOutliner {
     // new indices (re-attach required per ADR-003).
     if (instanceIndex < 0 || instanceIndex >= state.slotCount) return
 
-    const sourceMatrix = state.isSingleMesh
-      ? host.computeWorldMatrix(true) // full absolute transform (forced — see attach observer note); outline sits at identity
-      : host.thinInstanceGetWorldMatrices()[instanceIndex]
-    if (!sourceMatrix) return
+    // Read from ground truth, not Babylon's memoised worldMatrices cache (ADR-006).
+    if (state.isSingleMesh) {
+      // Full absolute transform (forced — see attach observer note); outline sits at identity.
+      host.computeWorldMatrix(true).copyToArray(state.outlineMatrices, instanceIndex * 16)
+    } else if (!copyHostMatrixInto(host, instanceIndex, state.outlineMatrices, instanceIndex)) {
+      return
+    }
+    state.outlineMesh.thinInstanceBufferUpdated('matrix')
 
-    state.outlineMesh.thinInstanceSetMatrixAt(instanceIndex, sourceMatrix, true)
     if (options?.color) {
       const c = options.color
       state.outlineMesh.thinInstanceSetAttributeAt(
@@ -562,7 +579,8 @@ export class ThinInstanceOutliner {
     if (!state) return
     if (!state.shownIndices.has(instanceIndex)) return
 
-    state.outlineMesh.thinInstanceSetMatrixAt(instanceIndex, ZERO_SCALE_MATRIX, true)
+    state.outlineMatrices.set(ZERO_SCALE_MATRIX.m, instanceIndex * 16)
+    state.outlineMesh.thinInstanceBufferUpdated('matrix')
     state.shownIndices.delete(instanceIndex)
   }
 
@@ -572,7 +590,7 @@ export class ThinInstanceOutliner {
     if (!state || state.shownIndices.size === 0) return
 
     for (const i of state.shownIndices) {
-      state.outlineMesh.thinInstanceSetMatrixAt(i, ZERO_SCALE_MATRIX, false)
+      state.outlineMatrices.set(ZERO_SCALE_MATRIX.m, i * 16)
     }
     state.outlineMesh.thinInstanceBufferUpdated('matrix')
     state.shownIndices.clear()
@@ -594,12 +612,6 @@ export class ThinInstanceOutliner {
     const state = this.attached.get(host)
     if (!state) return
 
-    // Single-mesh hosts self-refresh every frame via the render observer;
-    // an explicit call is still honored for symmetry (e.g. force an update
-    // between a transform change and the next render).
-    const sourceMatrices = state.isSingleMesh
-      ? [host.computeWorldMatrix(true)]
-      : host.thinInstanceGetWorldMatrices()
     const targets =
       instanceIndex !== undefined
         ? state.shownIndices.has(instanceIndex)
@@ -609,9 +621,16 @@ export class ThinInstanceOutliner {
 
     if (targets.length === 0) return
 
+    // Re-read ground truth per index (ADR-006). Allocation-free, so a moving host
+    // can be re-mirrored every frame without GC churn. Single-mesh hosts self-refresh
+    // via the render observer; an explicit call is still honored for symmetry (e.g.
+    // force an update between a transform change and the next render).
     for (const i of targets) {
-      const m = sourceMatrices[i]
-      if (m) state.outlineMesh.thinInstanceSetMatrixAt(i, m, false)
+      if (state.isSingleMesh) {
+        host.computeWorldMatrix(true).copyToArray(state.outlineMatrices, i * 16)
+      } else {
+        copyHostMatrixInto(host, i, state.outlineMatrices, i)
+      }
     }
     state.outlineMesh.thinInstanceBufferUpdated('matrix')
   }
