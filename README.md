@@ -95,7 +95,7 @@ This library renders a per-instance silhouette outline. Mental model:
 
 **Engines.** WebGL2 ✅ · WebGPU ✅ *(since 1.4.0)*.
 
-> ⚠️ **Every version through 1.3.0 was unusable on WebGPU.** The outline material registered `world0..world3` attributes that Babylon already adds for instanced meshes, duplicating shader location 2. WebGL binds attributes by name and tolerated it; WebGPU rejected the render pipeline and **blanked the entire scene** — not just the outline. If you are on ≤1.3.0 and using WebGPU, upgrade. See [#15](https://github.com/increasinglyHuman/babylon-thin-instance-outline/issues/15).
+> ⚠️ **Every version through 1.3.1 was unusable on WebGPU.** The outline material registered `world0..world3` attributes that Babylon already adds for instanced meshes, duplicating shader location 2. WebGL binds attributes by name and tolerated it; WebGPU rejected the render pipeline and **blanked the entire scene** — not just the outline. If you are on ≤1.3.1 and using WebGPU, upgrade to 1.4.0. See [#15](https://github.com/increasinglyHuman/babylon-thin-instance-outline/issues/15).
 
 **Host materials.** Opaque ✅ · alpha-tested ✅ · **transparent ⚠️ experimental** — the inverted hull relies on the host's front faces occluding the outline's. Materials that don't write depth may let the outline show *through* the host. That's a property of the technique, not a bug; use an opaque depth prepass or a screen-space outline for those.
 
