@@ -1,6 +1,6 @@
 {
   "name": "@poqpoq/babylon-thin-instance-outline",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Per-instance outline rendering for Babylon.js thin-instances using the inverted-hull technique.",
   "type": "module",
   "main": "dist/index.js",
@@ -49,7 +49,7 @@
     "url": "https://github.com/increasinglyHuman/babylon-thin-instance-outline/issues"
   },
   "peerDependencies": {
-    "@babylonjs/core": ">=8.0.0 <9.0.0"
+    "@babylonjs/core": ">=8.0.0 <10.0.0"
   },
   "devDependencies": {
     "@babylonjs/core": "^8.24.0",

@@ -3,7 +3,7 @@
 Per-instance outline rendering for Babylon.js thin-instances — using the classic inverted-hull technique. The outline lives on a sibling thin-instance host whose matrix buffer mirrors the source's, with per-instance show/hide via matrix scale.
 
 **🎮 Live demo:** https://poqpoq.com/babylon-outline/ — click a cube, the orbiting torus knot, or the greatsword. Add [`?webgpu`](https://poqpoq.com/babylon-outline/?webgpu) to run the same scene on the WebGPU backend.
-**Status:** v1.4.0 — stable public API for single-mesh static thin-instances, with per-instance color, smooth-normals preprocessing, and animated silhouette effects. **WebGL2 and WebGPU both supported** as of 1.4.0.
+**Status:** v1.4.1 — stable public API for single-mesh static thin-instances, with per-instance color, smooth-normals preprocessing, and animated silhouette effects. **WebGL2 and WebGPU both supported** as of 1.4.0. **Babylon 8.x and 9.x** as of 1.4.1.
 **Author:** Allen Partridge ([@increasinglyHuman](https://github.com/increasinglyHuman)) + Claude. Part of the [BlackBox creative suite](https://poqpoq.com).
 **License:** [MIT](LICENSE).
 
@@ -94,6 +94,8 @@ This library renders a per-instance silhouette outline. Mental model:
 ## Support policy
 
 **Engines.** WebGL2 ✅ · WebGPU ✅ *(since 1.4.0)*.
+
+**Babylon versions.** 8.x ✅ · 9.x ✅ *(since 1.4.1 — peer range `>=8.0.0 <10.0.0`; 1.4.0 and earlier declared `<9.0.0` and will fail peer resolution against Babylon 9)*. The full suite runs against 8.56 in development and was verified against 9.17.1 at the 1.4.1 bump; the lib touches only thin-instance buffers, rendering groups, and observables, all stable across the major.
 
 > ⚠️ **Every version through 1.3.1 was unusable on WebGPU.** The outline material registered `world0..world3` attributes that Babylon already adds for instanced meshes, duplicating shader location 2. WebGL binds attributes by name and tolerated it; WebGPU rejected the render pipeline and **blanked the entire scene** — not just the outline. If you are on ≤1.3.1 and using WebGPU, upgrade to 1.4.0. See [#15](https://github.com/increasinglyHuman/babylon-thin-instance-outline/issues/15).
 
